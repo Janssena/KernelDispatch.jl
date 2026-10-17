@@ -1,0 +1,10 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+KernelDispatch = "8d34074f-262e-46e2-9f95-b1abcc740b38"
+LiveServer = "16fef848-5104-11e9-1b77-fb7a48bbb589"
+
+[sources]
+KernelDispatch = {path = ".."}
+
+[compat]
+Documenter = "1"

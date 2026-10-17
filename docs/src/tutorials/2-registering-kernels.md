@@ -1,7 +1,7 @@
 # 2. Registering kernels
 
 A kernel is a type with a few methods, plus compiled binaries registered as its **variants**. This
-tutorial does the whole process twice for the [`SDPAOps`](../../examples/SDPAOps/src/SDPAOps.jl) op:
+tutorial does the whole process twice for the [`SDPAOps`](https://github.com/Janssena/KernelDispatch.jl/blob/main/examples/SDPAOps/src/SDPAOps.jl) op:
 once for a prebuilt GPU binary (e.g. `.fatbin`, `.cubin`, `.metallib`, etc.), once for a KernelAbstractions kernel. 
 Both end up as the same thing; a `KernelBinary` in the registry, launched by `call_binary`.
 

@@ -1,9 +1,9 @@
 """
     SDPAOps
 
-The example package of the KernelDispatch tutorials (`docs/tutorial/`): scaled dot-product attention as
-an op with two kernels — a hand-written Metal binary (standing in for a Triton one) and a
-KernelAbstractions kernel compiled to a binary.
+The example package of the KernelDispatch tutorials (see the tutorials in `docs/src/tutorials/`): scaled dot-product attention as
+an op with two kernels — a hand-written Metal binary (standing in for a Triton one; Metal only) and a
+KernelAbstractions kernel compiled to a binary (on whichever GPU backend is loaded).
 
     o = SDPA()(q, k, v)     # q: d×n, k: d×m, v: dv×m  →  o: dv×n (one column per query)
 """
@@ -114,6 +114,8 @@ source_tag(::SDPAKA) = string(hash(read(@__FILE__)); base=36)
 
 function build!(op::SDPA, kern::FlashAttn, key::Tuple)
     key == (:Float32,) || return nothing                # the binary is Float32 only
+    # A `.metallib` runs on Metal only: on another backend there is no binary to register.
+    KernelDispatch.device_backend() isa KernelDispatch.MetalBackendTag || return nothing
     add_variant!(op, kern, key; fwd=KernelBinary(METALLIB; entry="sdpa_fwd", threadgroup=64))
     return nothing
 end
@@ -123,7 +125,7 @@ function build!(op::SDPA, kern::SDPAKA, key::Tuple)
     tg = 64
     argtypes = (Vector{Float32}, Vector{Float32}, Vector{Float32}, Vector{Float32},
         Int32, Int32, Int32, Int32, Float32, Val{tg})
-    fwd = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes;
+    fwd = ka_compile(KernelDispatch.device_backend(), sdpa_ka!, argtypes;
         tg, name="sdpa_fwd_$(source_tag(kern))", params=(; tg))
     add_variant!(op, kern, key; fwd)
     return nothing
