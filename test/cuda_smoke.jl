@@ -9,13 +9,15 @@
 #
 #   1 backend registered      4 ka_compile -> .cubin        7 views and offsets      10 SDPAOps (KA kernel)
 #   2 array routing           5 load + thread limit         8 timing                 11 launch-size checks
-#   3 KA context and prelude  6 run_binary vs host          9 Residual fwd/bwd + Enzyme
+#   3 KA context and prelude  6 run_binary vs host          9 Residual fwd/bwd + Enzyme  12 .cubin and .ptx binaries
 #
 # `JULIA_DEBUG=KernelDispatchCUDAExt` additionally logs the entry point, image size and launch geometry.
 
 using Test, Random, InteractiveUtils, KernelDispatch, KernelAbstractions, CUDA, SDPAOps, Enzyme
+const GPU_PKG = CUDA
 include(joinpath(@__DIR__, "fixtures.jl"))
 include(joinpath(@__DIR__, "sdpa_helpers.jl"))
+include(joinpath(@__DIR__, "cuda_ptx.jl"))
 
 const KO = KernelDispatch
 const EXT = Base.get_extension(KernelDispatch, :KernelDispatchCUDAExt)
@@ -152,7 +154,7 @@ stage("10 SDPAOps, KernelAbstractions kernel") do
         q, k, v = inputs(rng, d, n, m, dv)
         o = KO.forward(SDPA(), SDPAKA(), CuArray(q), CuArray(k), CuArray(v))
         check(o isa CuArray && size(o) == (dv, n))
-        check(Array(o) ≈ sdpa_reference(q, k, v) rtol = 1e-3, "wrong values for (d,n,m,dv)=$((d, n, m, dv))")
+        check(isapprox(Array(o), sdpa_reference(q, k, v); rtol=1e-3), "wrong values for (d,n,m,dv)=$((d, n, m, dv))")
     end
 end
 
@@ -163,6 +165,20 @@ stage("11 launch-size checks") do
     check(try; time_binary(big, a()...; extent=64); false; catch e; e isa ArgumentError; end,
         "a threadgroup over the function's limit was not refused with an ArgumentError")
     check(try; prepare_launch(LS, a()...); false; catch e; e isa ArgumentError; end, "no extent")
+end
+
+stage("12 plain binaries: .cubin and .ptx, eager") do
+    bins = scale_binaries(mktempdir())
+    for (kind, bin) in pairs(bins), n in (1, 100, 1000)
+        x = randn(rng, Float32, n)
+        (y,) = run_binary(bin, CuArray(x), OutArray(Float32, n), 3.0f0, Int32(n); extent=n)
+        check(Array(y) ≈ 3.0f0 .* x, "$kind: wrong values for n=$n")
+    end
+    junk = joinpath(mktempdir(), "scale.metallib")
+    write(junk, UInt8[1, 2, 3])
+    bad = KernelBinary(junk; entry="scale", threadgroup=64)
+    check(try; run_binary(bad, CuArray(rand(Float32, 4)), OutArray(Float32, 4), 1f0, Int32(4); extent=4); false
+          catch e; e isa ArgumentError && occursin(".cubin", e.msg); end, "a .metallib was not refused with an ArgumentError")
 end
 
 println("\n════════ summary ════════")
