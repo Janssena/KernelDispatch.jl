@@ -53,7 +53,7 @@ One compiled launch, everything about it persisted with it in the manifest.
 - `params` are the tuning numbers it was built with, for [`extras`](@ref) to read.
 - `is_ka` says the binary was compiled from a KernelAbstractions kernel ([`ka_compile`](@ref) sets
   it), so it takes the backend's [`ka_state_words`](@ref) and KA's launch context ahead of its
-  arguments, and is dispatched flat (design §5). It is a property of the binary, not of the kernel
+  arguments, and is dispatched flat. It is a property of the binary, not of the kernel
   type that holds it: one kernel can register a KA-compiled binary for one launch and a Triton one
   for another.
 """
