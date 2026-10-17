@@ -21,6 +21,7 @@ struct ROCmBackendTag <: KernelBackend end
 """A device no kernel exists for. Always falls back to the host path rather than failing."""
 struct UnknownBackend <: KernelBackend end
 
+"""The union of the device backend tags: [`MetalBackendTag`](@ref), [`CUDABackendTag`](@ref), [`ROCmBackendTag`](@ref)."""
 const GPUBackend = Union{MetalBackendTag,CUDABackendTag,ROCmBackendTag}
 
 """
