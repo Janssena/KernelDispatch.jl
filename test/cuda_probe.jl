@@ -29,7 +29,7 @@ function run_case(convention, image)
         const GPU_PKG = CUDA
         include($(joinpath(@__DIR__, "cuda_ptx.jl")))
         bins = scale_binaries(mktempdir())
-        bin = bins[$(Symbol(image))]
+        bin = bins[$(QuoteNode(Symbol(image)))]
         file, entry, tg = bin.file, bin.entry, bin.threadgroup
         Reactant.set_default_backend("gpu")
         println("platform: ", Reactant.XLA.platform_name(Reactant.XLA.default_backend()))
