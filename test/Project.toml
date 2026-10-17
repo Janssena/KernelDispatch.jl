@@ -1,4 +1,5 @@
 [deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 KernelDispatch = "8d34074f-262e-46e2-9f95-b1abcc740b38"
@@ -7,12 +8,14 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
 SDPAOps = "505b5885-5c5e-49a2-9898-f92d217b9ae6"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+Zlib_jll = "83775a58-1f1d-513f-b197-d71354ab007a"
 
 [sources]
 KernelDispatch = {path = ".."}
 SDPAOps = {path = "../examples/SDPAOps"}
 
 [compat]
+CUDA = "6"
 Enzyme = "0.13.199"
 Metal = "1.10"
 Reactant = "0.2.279"

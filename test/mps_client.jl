@@ -5,12 +5,12 @@
 # it, so an op call takes the host path and the device-kernel route is untested unless a real Metal
 # client is installed first. Anything exercising that path has to build this client explicitly.
 #
-# Set `JAX_MPS_PLUGIN` to the plugin's `libpjrt_plugin_mps.dylib` if it is not at the default path.
+# Set `JAX_MPS_PLUGIN` to the plugin's `libpjrt_plugin_mps.dylib`; without it the traced tests skip.
 #
 # No side effects on include: `mps_client()` is a function, and returns `nothing` rather than
 # throwing when the plugin is absent, so callers skip cleanly on a machine without it.
 
-const JAX_MPS_PLUGIN = get(ENV, "JAX_MPS_PLUGIN")
+const JAX_MPS_PLUGIN = get(ENV, "JAX_MPS_PLUGIN", "")      # "" -> no plugin: `mps_client()` is `nothing`
 
 # MLX (the engine behind the plugin) reserves ~1.5x the working set and does not release freed
 # buffers between unrelated compiles. Must be set before the plugin creates its client.

@@ -1,20 +1,19 @@
 # Traced on the jax-mps Metal client: the SAME binaries the eager path launches, embedded as
 # `mps.metal_kernel_lib` custom calls, with the backward attached as the forward's reverse rule.
-# The forward of a real op (SDPAOps) traced is in sdpa.test.jl; here, what only the fixtures have: a
+# The forward of a real op (SDPAOps) traced is in gpu/sdpa.test.jl; here, what only the fixtures have: a
 # backward binary, autodiff refusal, and the binary-level launch features.
+#
+# Metal only: it is the one backend with a custom-call convention (jax-mps). Under any other backend a
+# traced launch fails with the "no custom_call" error (asserted device-free in cpu/inference.test.jl).
 
 using Test, Random, KernelDispatch, Reactant, Enzyme
-# Metal (and the jax-mps client) only exist on a Mac: elsewhere these sections skip.
-@static if Sys.isapple()
-    using Metal
-end
-isdefined(@__MODULE__, :Residual) || include("fixtures.jl")
-Sys.isapple() && (isdefined(@__MODULE__, :mps_client) || include("mps_client.jl"))
+isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))
+Sys.isapple() && (isdefined(@__MODULE__, :mps_client) || include(joinpath(@__DIR__, "..", "mps_client.jl")))
 
-const _MPS = Sys.isapple() ? mps_client() : nothing
+const _MPS = GPU === :metal ? mps_client() : nothing
 
-if _MPS === nothing || !Sys.isapple() || !Metal.functional()
-    @warn "no jax-mps Metal client (or Metal not functional); skipping traced tests" maxlog = 1
+if _MPS === nothing
+    @info "no jax-mps client (Metal only; set JAX_MPS_PLUGIN): skipping traced tests"
 else
     prev = Reactant.XLA.default_backend()
     Reactant.set_default_backend(_MPS)

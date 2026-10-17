@@ -2,18 +2,18 @@
 #
 # These tests never run a kernel: they trace, and assert on the emitted MLIR. That is deliberate --
 # the part that can silently go wrong is the *shape* of what gets emitted, and it is checkable
-# without Metal, without the metallibs, and on any backend. Enzyme verifies this same signature
+# without a GPU, without the metallibs, on the CPU client. Enzyme verifies this same signature
 # before it fires, so a mismatch here is what would otherwise become a compile error at gradient
 # time (or, if the check did not exist, a wrong gradient).
 #
 # Runnable on its own:
-#     julia --project=test test/custom_call.test.jl
+#     julia --project=test test/cpu/custom_call.test.jl
 
 using Test, KernelDispatch, Reactant
 
 const RX = Base.get_extension(KernelDispatch, :KernelDispatchReactantExt)
 
-isdefined(@__MODULE__, :reverse_symbol) || include(joinpath(@__DIR__, "ir_utils.jl"))   # reverse_symbol, reverse_signature
+isdefined(@__MODULE__, :reverse_symbol) || include(joinpath(@__DIR__, "..", "ir_utils.jl"))   # reverse_symbol, reverse_signature
 
 emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none f(args...))
 
@@ -91,7 +91,8 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
     end
 
     @testset "custom_call dispatches on the backend" begin
-        @test_throws ArgumentError KernelDispatch.custom_call(KernelDispatch.CUDABackendTag(),
+        # A backend without a method (ROCm) says so; CUDA has one (cpu/cuda_launch.test.jl).
+        @test_throws ArgumentError KernelDispatch.custom_call(KernelDispatch.ROCmBackendTag(),
             "_fwd", "/tmp/none.metallib", (), [(4,)], Any[]; grid=(1, 1, 1))
 
         fwd(x) = KernelDispatch.custom_call(KernelDispatch.MetalBackendTag(), "_fwd", "/tmp/none.metallib",

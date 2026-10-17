@@ -70,7 +70,7 @@ Compile both binaries with `ka_compile` and register them as both kernels' Float
 nothing: `:ka` is the default, and a switch here would not be visible to the caller's block anyway.
 """
 function register_residual!(; tg=64)
-    be = KernelDispatch.MetalBackendTag()
+    be = KernelDispatch.device_backend()
     dir = joinpath(FIXTURE_CACHE, "bin")
     argt = (Vector{Float32}, Vector{Float32}, Vector{Float32}, Float32, Int32, Val{tg})
     fwd = ka_compile(be, residual_fwd!, argt; tg, name="residual_fwd_t$tg", params=(; tg), dir)
@@ -116,11 +116,11 @@ const LOGIT_CACHE = mktempdir()
 KernelDispatch.cache_dir(::LogitScale) = joinpath(LOGIT_CACHE, "logit_scale")
 const LS_TG = 64
 
-"Compile the kernel (into the default temporary build directory) and register the binary as the op's variant."
+"Compile the kernel for the loaded device backend (into the default temporary build directory) and register the binary as the op's variant."
 function register_logit_scale!(; tg=LS_TG)
     register_kernel!(LogitScale(), LogitScaleKA())
     argtypes = (Vector{Float32}, Vector{Float32}, Float32, Int32, Val{tg})
-    bin = ka_compile(KernelDispatch.MetalBackendTag(), logit_scale_kernel!, argtypes; tg, name="test_scale_t$tg")
+    bin = ka_compile(KernelDispatch.device_backend(), logit_scale_kernel!, argtypes; tg, name="test_scale_t$tg")
     add_variant!(LogitScale(), LogitScaleKA(), (); main=bin)
 end
 

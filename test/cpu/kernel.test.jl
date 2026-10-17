@@ -2,7 +2,7 @@
 # copied and hashed but never opened.
 
 using Test, KernelDispatch
-isdefined(@__MODULE__, :Residual) || include("fixtures.jl")
+isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))
 
 const KO = KernelDispatch
 
@@ -166,7 +166,7 @@ end
 @testset "no attention in the generic code" begin
     # KernelDispatch is op-generic: attention is ONE op, declared by its user (LuxTriangleAttention's
     # `SDPA`). Nothing here may know its roles or name it.
-    root = joinpath(@__DIR__, "..")
+    root = joinpath(@__DIR__, "..", "..")
     files = [joinpath(d, f) for d in (joinpath(root, "src"), joinpath(root, "ext"), joinpath(root, "ext", "reactant"))
              if isdir(d) for f in readdir(d) if endswith(f, ".jl")]
     @test !isempty(files)
