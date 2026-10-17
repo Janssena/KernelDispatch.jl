@@ -40,15 +40,25 @@ end
 
 # --- loading ----------------------------------------------------------------------------------------
 
+const IMAGE_EXTENSIONS = (".cubin", ".ptx")
+
+# The bytes the driver loads: a cubin as is, PTX NUL-terminated (it is text).
+function _image(path::AbstractString)
+    ext = lowercase(splitext(path)[2])
+    ext in IMAGE_EXTENSIONS || throw(ArgumentError(
+        "CUDA binary `$path`: expected a .cubin (machine code) or .ptx (text the driver compiles), not `$ext`"))
+    image = read(path)
+    ext == ".ptx" && push!(image, 0x00)
+    return image
+end
+
 # Module loading is expensive; on the launch path it would dominate small problems. Per context, because
 # a `CuFunction` belongs to the context that loaded it.
 const _FUNCTIONS = Dict{Tuple{Any,String,String},Any}()
 
 function _function(path::AbstractString, entry::AbstractString)
     get!(_FUNCTIONS, (CUDACore.context(), String(path), String(entry))) do
-        image = read(path)
-        endswith(path, ".ptx") && push!(image, 0x00)         # PTX is text: the driver wants it NUL-terminated
-        mod = CUDACore.CuModule(image)
+        mod = CUDACore.CuModule(_image(path))
         CUDACore.create_exceptions!(mod)       # resets the module context's exception flag
         f = CUDACore.CuFunction(mod, entry)
         @debug "loaded CUDA kernel" path entry

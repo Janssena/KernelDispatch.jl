@@ -130,6 +130,9 @@ end
     @test e isa ArgumentError && occursin("KernelAbstractions", e.msg)
     e = err(() -> KernelDispatch.custom_call(tag, "scale", cubin, (), [(4,)], layout; grid=(1, 1, 1), threadgroup=48))
     @test e isa ArgumentError && occursin("multiple of 32", e.msg)
+    metallib = tempname() * ".metallib"; write(metallib, UInt8[1, 2, 3])
+    e = err(() -> KernelDispatch.custom_call(tag, "scale", metallib, (), [(4,)], layout; grid=(1, 1, 1), threadgroup=64))
+    @test e isa ArgumentError && occursin(".cubin", e.msg)
     e = err(() -> KernelDispatch.custom_call(tag, "scale", "/nonexistent.cubin", (), [(4,)], layout;
         grid=(1, 1, 1), threadgroup=64))
     @test e isa ArgumentError && occursin("not found", e.msg)

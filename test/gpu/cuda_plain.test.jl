@@ -21,6 +21,11 @@ if GPU === :cuda
             @test Array(y) ≈ 3.0f0 .* x
         end
         @test KernelDispatch.max_threads(bins.cubin) >= 64
+        # Only .cubin and .ptx are loaded: anything else is refused up front.
+        junk = joinpath(mktempdir(), "scale.metallib"); write(junk, UInt8[1, 2, 3])
+        bad = KernelBinary(junk; entry="scale", threadgroup=64)
+        err = try run_binary(bad, DeviceArray(rand(Float32, 4)), OutArray(Float32, 4), 1.0f0, Int32(4); extent=4); nothing catch e; e end
+        @test err isa ArgumentError && occursin(".cubin", err.msg)
     end
 
     @testset "traced, through XLA's kernel-call handler" begin
