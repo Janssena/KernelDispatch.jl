@@ -3,7 +3,7 @@
 
 Run operations as compiled kernels — eagerly on device arrays, embedded as custom calls in a
 Reactant-compiled program, or as plain Julia on the host — with kernels switchable per op and tuned
-variants picked from the inputs. See the README and `docs/design.md`.
+variants picked from the inputs. See the documentation for tutorials and the API reference.
 """
 module KernelDispatch
 
