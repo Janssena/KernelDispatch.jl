@@ -115,10 +115,10 @@ end
     execute(proto::AbstractArray, l::Launch) -> Tuple
 
 Allocate every `OutArray` of the launch's arguments, bind `(prelude..., args..., extras...)` in order
-(a `Val` takes no slot), dispatch, and return the allocated outputs. Dispatches on `AbstractArray`:
-the Reactant extension's method, on traced arrays, is more specific.
+(a `Val` takes no slot), dispatch, and return the allocated outputs. Dispatches on `MtlArray`, so it
+coexists with the other backends' methods (CUDA's on `CuArray`, Reactant's on traced arrays).
 """
-function KO.execute(proto::AbstractArray, l::KO.Launch)
+function KO.execute(proto::MtlArray, l::KO.Launch)
     bound, slots = KO.bind_slots(proto, l.prelude, l.args, l.extras)
     if KO.recording()
         KO.record!(l, Any[(:bytes => p for p in l.prelude)...,

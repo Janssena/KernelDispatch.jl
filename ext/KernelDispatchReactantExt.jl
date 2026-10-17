@@ -26,8 +26,10 @@ function reactant_backend()
     catch
         return KO.UnknownBackend()
     end
+    platform = lowercase(platform)
+    
     platform == "mps" && return KO.MetalBackendTag()
-    platform == "cuda" && return KO.CUDABackendTag()
+    platform in ("cuda", "gpu") && return KO.CUDABackendTag()
     platform == "rocm" && return KO.ROCmBackendTag()
     platform == "cpu" && return KO.CPUBackend()
     return KO.UnknownBackend()
@@ -37,6 +39,7 @@ KO.device_zeros(::AnyTracedRArray, ::Type{T}, dims::Integer...) where {T} =
     _mat(Reactant.Ops.fill(zero(T), Int.(dims)))
 
 include("KernelDispatchReactantExt/custom_call.jl")
+include("KernelDispatchReactantExt/cuda_launch.jl")
 
 _mat(x) = Reactant.TracedUtils.materialize_traced_array(x)
 
@@ -76,7 +79,7 @@ function KO.execute(::AnyTracedRArray, l::KO.Launch)
     end
     b = l.binary
     results = KO.custom_call(reactant_backend(), b.entry, b.file, Tuple(operands), shapes, layout;
-        grid=l.grid, threadgroup=b.threadgroup, result_eltypes=Tuple(eltypes))
+        grid=l.grid, threadgroup=b.threadgroup, result_eltypes=Tuple(eltypes), is_ka=b.is_ka)
     return Tuple(map(_rev, results))
 end
 

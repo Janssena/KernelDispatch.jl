@@ -157,15 +157,19 @@ function device_backend()
 end
 
 """
-    custom_call(backend, entry, path, operands, result_shapes, layout; grid, threadgroup, result_eltypes)
-        -> results
+    custom_call(backend, entry, path, operands, result_shapes, layout; grid, threadgroup, result_eltypes,
+        is_ka) -> results
 
 Embed the kernel `entry` of the compiled binary at `path` in a traced program as a
 `stablehlo.custom_call`, in the form `backend`'s XLA client understands. `layout` is the kernel's
 argument table in order, as `(:in, i)`, `(:out, i)`, `(:out_zero, i)` or `(:bytes, payload)`.
 
-A generic, so each backend extension (Reactant for Metal today; CUDA/ROCm later) adds a method for
-its own tag. The traced `execute` calls it with the tag of the compiling client.
+`is_ka` tells whether the binary was compiled from a KernelAbstractions kernel (see [`KernelBinary`](@ref)),
+for a backend whose custom call cannot launch one.
+
+A generic, so each backend extension adds a method for its own tag (the Reactant extension provides Metal's, for
+jax-mps, and CUDA's, for XLA's `triton_kernel_call` handler: plain pointer-and-scalar cubins only). The traced
+`execute` calls it with the tag of the compiling client.
 """
 custom_call(be::KernelBackend, args...; kw...) = throw(ArgumentError(
     "no stablehlo.custom_call embedding for backend $(typeof(be)); load an extension that provides one"))

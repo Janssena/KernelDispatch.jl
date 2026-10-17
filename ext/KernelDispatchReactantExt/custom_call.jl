@@ -1,5 +1,11 @@
 _le_bytes(x) = "[" * join(Int.(reinterpret(UInt8, [x])), ",") * "]"
 
+# A string is a StringAttr (the legacy calling conventions); a dictionary is a DictionaryAttr, the form the
+# typed-FFI convention (`api_version = 4`) takes its attributes in.
+_config_attr(s::AbstractString) = Reactant.MLIR.IR.Attribute(s)
+_config_attr(d::AbstractDict) = Reactant.MLIR.IR.Attribute(d)
+_config_attr(a::Reactant.MLIR.IR.Attribute) = a
+
 """
     _embed_custom_call(call_target_name, operands, result_shapes; backend_config,
         api_version=1, reverse=nothing, active_operands=nothing, label=call_target_name) -> results
@@ -9,9 +15,9 @@ attribute. The op itself carries no meaning tied to any one backend or dispatche
 `"mps.metal_kernel_lib"` (below) is one Metal convention built on it, but a CUDA or ROCm custom
 call, or a user's own, attaches through the same seam by passing a different `call_target_name`.
 
-`backend_config` must be a StringAttr; XLA's custom-call plugins that key off JSON (as jax-mps'
-does) expect it pre-serialised, not built from a NamedTuple here, since the JSON schema is entirely
-the target's own convention to define.
+`backend_config` is a string (a StringAttr; XLA's custom-call plugins that key off JSON, as jax-mps' does,
+expect it pre-serialised, since the JSON schema is entirely the target's own convention to define) or, for
+the typed-FFI convention (`api_version = 4`), a dictionary of attributes.
 
 `result_eltypes` is the element type of each result, one per entry of `result_shapes`; it
 defaults to all `Float32`. The declared type IS the buffer the runtime allocates, so it must match
@@ -25,24 +31,34 @@ target name is shared by several logically distinct calls (`"mps.metal_kernel_li
 every kernel in a `.metallib` under that one target, for instance).
 """
 function _embed_custom_call(call_target_name::AbstractString, operands, result_shapes;
-        backend_config::AbstractString, api_version::Integer=1, reverse=nothing,
+        backend_config, api_version::Integer=1, reverse=nothing,
         active_operands=nothing, label::AbstractString=call_target_name,
-        result_eltypes=ntuple(Returns(Float32), length(result_shapes)))
+        result_eltypes=ntuple(Returns(Float32), length(result_shapes))
+)
     length(result_eltypes) == length(result_shapes) || throw(ArgumentError(
-        "$(length(result_eltypes)) result eltypes for $(length(result_shapes)) result shapes"))
-    rts = [Reactant.Ops.mlir_type(Reactant.TracedRArray{E,length(sh)}, Int64[sh...])
-           for (E, sh) in zip(result_eltypes, result_shapes)]
+        "$(length(result_eltypes)) result eltypes for $(length(result_shapes)) result shapes"
+    ))
+
+    rts = [
+        Reactant.Ops.mlir_type(Reactant.TracedRArray{E,length(sh)}, Int64[sh...])
+        for (E, sh) in zip(result_eltypes, result_shapes)
+    ]
+    
     op = Reactant.MLIR.Dialects.stablehlo.custom_call([x.mlir_data for x in operands];
         result_0=rts,
         call_target_name=Reactant.MLIR.IR.Attribute(call_target_name),
-        backend_config=Reactant.MLIR.IR.Attribute(backend_config),
-        api_version=Reactant.MLIR.IR.Attribute(Int32(api_version)))
+        backend_config=_config_attr(backend_config),
+        api_version=Reactant.MLIR.IR.Attribute(Int32(api_version))
+    )
+    
     results = ntuple(length(result_shapes)) do i
         Reactant.TracedRArray{result_eltypes[i],length(result_shapes[i])}(
             (), Reactant.MLIR.IR.result(op, i), result_shapes[i])
     end
+    
     isnothing(reverse) ||
         _attach_reverse_rule!(op, label, operands, results, reverse, active_operands)
+    
     return results
 end
 
@@ -61,7 +77,8 @@ by `threadgroup_position_in_grid`.
 """
 function _metal_kernel_lib(name, libpath, operands, result_shapes, layout; grid,
         threadgroup=1024, reverse=nothing, active_operands=nothing,
-        result_eltypes=ntuple(Returns(Float32), length(result_shapes)))
+        result_eltypes=ntuple(Returns(Float32), length(result_shapes))
+)
     slots = map(enumerate(layout)) do (i, entry)
         kind, val = entry
         s = i - 1
@@ -69,6 +86,7 @@ function _metal_kernel_lib(name, libpath, operands, result_shapes, layout; grid,
         kind === :out_zero ? "{\"slot\":$s,\"kind\":\"output\",\"arg\":$val,\"zero_init\":true}" :
         "{\"slot\":$s,\"kind\":\"$(kind === :in ? "input" : "output")\",\"arg\":$val}"
     end
+
     cfg = "{\"name\":\"$name\",\"metallib_path\":\"$libpath\"," *
           "\"grid\":[$(grid[1]),$(grid[2]),$(grid[3])]," *
           "\"threadgroup\":[$(threadgroup),1,1]," *
@@ -83,7 +101,7 @@ end
 
 The Metal embedding: [`_metal_kernel_lib`](@ref) (`mps.metal_kernel_lib`).
 """
-KO.custom_call(::KO.MetalBackendTag, entry, path, operands, result_shapes, layout; kw...) =
+KO.custom_call(::KO.MetalBackendTag, entry, path, operands, result_shapes, layout; is_ka=false, kw...) =
     _metal_kernel_lib(entry, path, operands, result_shapes, layout; kw...)
 
 """
@@ -134,9 +152,12 @@ function _attach_reverse_rule!(op, name, operands, results, vjp, active_operands
     # Read the symbol back rather than reusing the name we asked for: inserting into the module's
     # symbol table can uniquify it, and a stale reference here would be a dangling symbol.
     sym = String(Reactant.MLIR.IR.getattr(revfn, "sym_name"))
+    
     Reactant.MLIR.IR.setattr!(op, "enzyme.reverse",
         Reactant.MLIR.IR.FlatSymbolRefAttribute(sym))
+
     Reactant.MLIR.IR.setattr!(op, "enzyme.active_operands",
         Reactant.MLIR.IR.Attribute(Int64[active_operands...]))
+        
     return nothing
 end
