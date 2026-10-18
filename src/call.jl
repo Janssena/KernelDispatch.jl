@@ -108,10 +108,10 @@ One concrete launch of a [`KernelBinary`](@ref), made by [`prepare_launch`](@ref
 - `binary`: what is launched;
 - `args`, `extras`: the arguments as they will be bound (device wrappers already densified),
   `OutArray`s still unallocated. `args` is a typed tuple, so the outputs' types infer;
-- `prelude`: what the binary takes ahead of its arguments (for an `is_ka` binary the backend's state
+- `prelude`: what the binary takes ahead of its arguments (for an `abi = :ka` binary the backend's state
   words and KA's context, else nothing);
 - `groups`: the threadgroups the problem needs, `cld.(extent, tile)`;
-- `grid`: the grid actually dispatched (`groups`, flattened by [`ka_grid`](@ref) for an `is_ka` binary);
+- `grid`: the grid actually dispatched (`groups`, flattened by [`ka_grid`](@ref) for an `abi = :ka` binary);
 - `label`: its name in [`record_bindings`](@ref).
 """
 struct Launch{A<:Tuple,E<:Tuple,P<:AbstractVector}
@@ -128,7 +128,7 @@ end
     prepare_launch(b::KernelBinary, args...; extent, extras=(), label=Symbol(b.entry)) -> Launch
 
 Turn a problem size into a concrete [`Launch`](@ref) of `b`, without running it: `cld.(extent, b.tile)`
-threadgroups, the KA prelude and flat grid for an `is_ka` binary, device wrappers densified
+threadgroups, the prelude and grid of the binary's ABI (KA's context and flat grid for `:ka`), device wrappers densified
 ([`device_dense`](@ref)). The binary need not be registered. Binding follows [`call_binary`](@ref):
 `(args..., extras...)` in the order given.
 """
@@ -144,6 +144,7 @@ function prepare_launch(b::KernelBinary, args...;
     isnothing(proto) && throw(ArgumentError("binary `$(b.entry)` was launched without any array argument"))
     
     be = backend_of(proto)
+    be isa GPUBackend && check_binary(be, b)
     groups = cld.(_pad3(extent), b.tile)
     prelude, grid = _prelude_and_grid(be, b, groups)
     _make_dense = Base.Fix1(device_dense, be)
@@ -156,14 +157,29 @@ function prepare_launch(b::KernelBinary, args...;
     )
 end
 
-# What `b` takes ahead of its arguments, and the grid it is dispatched on, for `groups` threadgroups. A
-# KA-compiled binary: KA's context (built by KA from this grid) ahead of the arguments, and the
-# backend's own dispatch grid.
+# What `b` takes ahead of its arguments, and the grid it is dispatched on, for `groups` threadgroups, by its
+# ABI. The two built-in ABIs are branched on, not dispatched, so the result infers; any other ABI is an
+# extension's (`abi_prelude_and_grid`), asserted to the same type.
 function _prelude_and_grid(be::KernelBackend, b::KernelBinary, groups::NTuple{3,Int})
-    b.is_ka || return (Any[], groups)
-    ctx, ghost = ka_context(be, groups, b.threadgroup)
-    return (ka_prelude(be, ctx, ghost), ka_grid(be, groups))
+    abi = getfield(b, :abi)
+    abi === :plain && return (Any[], groups)
+    if abi === :ka     # KA's context (built by KA from this grid) ahead of the arguments, the backend's own grid
+        ctx, ghost = ka_context(be, groups, b.threadgroup)
+        return (ka_prelude(be, ctx, ghost), ka_grid(be, groups))
+    end
+    return abi_prelude_and_grid(Val(abi), be, b, groups)::Tuple{Vector{Any},NTuple{3,Int}}
 end
+
+"""
+    abi_prelude_and_grid(::Val{abi}, backend, b::KernelBinary, groups) -> (prelude::Vector{Any}, grid::NTuple{3,Int})
+
+What a binary of a non-built-in ABI (`b.abi`, neither `:plain` nor `:ka`) takes ahead of its arguments, and the
+grid it is dispatched on. An extension that supports such a binary (a Triton one, say) defines a method for its
+`Val{:name}`. No default: a binary whose ABI nothing implements is refused here, not launched with a shifted
+argument list.
+"""
+abi_prelude_and_grid(::Val{A}, be::KernelBackend, b::KernelBinary, groups) where {A} = throw(ArgumentError(
+    "binary `$(b.entry)` declares ABI `:$A`, which no loaded extension implements for $(typeof(be))"))
 
 """
     execute(l::Launch) -> Tuple

@@ -13,21 +13,26 @@ import Preferences
 
 include("backend.jl")
 include("kernel.jl")
+include("formats.jl")
 include("preferences.jl")
 include("call.jl")
 include("ka.jl")
+include("triton.jl")
 
 export AbstractKernelOp, AbstractKernel, KernelBinary, OutArray
 export register_kernel!, add_variant!, use_kernel!, current_kernel, list_kernels
 export reset_kernel!, set_default_kernel!, clear_default_kernel!, selected_kernel
-export call_binary, run_binary, prepare_launch, time_binary, ka_compile, backend_of
+export call_binary, run_binary, prepare_launch, time_binary, ka_compile, triton_binary, backend_of
 
-public opname, default_kernel, @default_kernel, default_candidates, kernelname, host, forward, backward, 
+# Tiers. Exported above: the user API. `public` below: what kernel authors define and what tuners and tools use.
+# The backend interface (what an extension implements: `encode_launch`, `device_time`, `bind_slots`,
+# `device_dense`, `custom_call`, the `ka_*` hooks, `supported_formats`, `target_id`, `traced_support`, ...) is
+# documented on its own page and is deliberately NOT public: it may change as backends are added.
+public opname, default_kernel, @default_kernel, default_candidates, kernelname, host, forward, backward,
     variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, execute,
     Launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,
-    GPUBackend, device_dense, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, cache_root, 
-    ka_binary_cache_dir, device_available, custom_call, ka_context, ka_grid, ka_backend_object, 
-    ka_state_words, device_zeros, max_threads, device_time, device_backend, bind_slots
+    GPUBackend, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, cache_root, ka_binary_cache_dir,
+    current_target, device_available, device_zeros, max_threads, device_backend
 
 """
     device_zeros(proto, T, dims...) -> array

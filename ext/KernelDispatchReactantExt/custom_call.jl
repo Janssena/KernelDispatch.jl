@@ -76,7 +76,7 @@ Two things are easy to get wrong and are silent when wrong: the `backend_config`
 by `threadgroup_position_in_grid`.
 """
 function _metal_kernel_lib(name, libpath, operands, result_shapes, layout; grid,
-        threadgroup=1024, reverse=nothing, active_operands=nothing,
+        threadgroup=1024, reverse=nothing, active_operands=nothing, shared_mem::Integer=0,    # shared_mem: unused
         result_eltypes=ntuple(Returns(Float32), length(result_shapes))
 )
     slots = map(enumerate(layout)) do (i, entry)
@@ -101,7 +101,7 @@ end
 
 The Metal embedding: [`_metal_kernel_lib`](@ref) (`mps.metal_kernel_lib`).
 """
-KO.custom_call(::KO.MetalBackendTag, entry, path, operands, result_shapes, layout; is_ka=false, kw...) =
+KO.custom_call(::KO.MetalBackendTag, entry, path, operands, result_shapes, layout; kw...) =
     _metal_kernel_lib(entry, path, operands, result_shapes, layout; kw...)
 
 """
