@@ -204,7 +204,7 @@ stage("14 Triton ABI: shared memory and trailing pointers") do
     for shared in (0, 1024, 60 * 1024), (kind, bin) in pairs(bins)      # 60 KB is above the 48 KB default
         tb = KernelBinary(bin.file; entry="scale", threadgroup=64, abi=:triton, target=bin.target,
             shared_mem=shared, params=(; scratch_pointers=2))
-        (y,) = run_binary(tb, CuArray(x), OutArray(Float32, 100), 2.0f0, Int32(100); extent=2)    # tile = threadgroup
+        (y,) = run_binary(tb, CuArray(x), OutArray(Float32, 100), 2.0f0, Int32(100); extent=100)   # tile = 64: 2 blocks
         check(Array(y) ≈ 2.0f0 .* x, "$kind, shared_mem=$shared: wrong values")
     end
 end
