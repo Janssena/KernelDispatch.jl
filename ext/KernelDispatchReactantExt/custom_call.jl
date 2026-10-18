@@ -6,6 +6,20 @@ _config_attr(s::AbstractString) = Reactant.MLIR.IR.Attribute(s)
 _config_attr(d::AbstractDict) = Reactant.MLIR.IR.Attribute(d)
 _config_attr(a::Reactant.MLIR.IR.Attribute) = a
 
+# `output_operand_aliases`: pairs `(result, operand)`, both 0-based. The result then shares the operand's buffer
+# (an in-place update, or an output that is handed to the kernel as an input too); `nothing` when there are none.
+function _aliases_attr(aliases, nresults::Integer)
+    isempty(aliases) && return nothing
+    ctx = Reactant.MLIR.IR.current_context()
+    attrs = map(aliases) do (result, operand)
+        out_tup = Ref{Int64}(result)
+        Reactant.MLIR.IR.Attribute(
+            GC.@preserve ctx out_tup Reactant.MLIR.API.stablehloOutputOperandAliasGet(
+                ctx, nresults == 1 ? 0 : 1, pointer_from_objref(out_tup), operand, 0, C_NULL))
+    end
+    return Reactant.MLIR.IR.Attribute(attrs)
+end
+
 """
     _embed_custom_call(call_target_name, operands, result_shapes; backend_config,
         api_version=1, reverse=nothing, active_operands=nothing, label=call_target_name) -> results
@@ -24,6 +38,8 @@ defaults to all `Float32`. The declared type IS the buffer the runtime allocates
 what the kernel writes: a kernel storing `Float16` into a result declared `Float32` fills half the
 bytes and is read back as garbage, with no error.
 
+`output_operand_aliases` is a list of `(result, operand)` pairs (0-based) whose buffers are shared.
+
 `reverse`, given, is a VJP attached via [`_attach_reverse_rule!`](@ref) — see its docstring for the
 calling convention. `label` only affects the generated reverse function's (gensym'd) name, for
 readability in an MLIR dump; it defaults to `call_target_name` but is worth overriding when one
@@ -33,7 +49,8 @@ every kernel in a `.metallib` under that one target, for instance).
 function _embed_custom_call(call_target_name::AbstractString, operands, result_shapes;
         backend_config, api_version::Integer=1, reverse=nothing,
         active_operands=nothing, label::AbstractString=call_target_name,
-        result_eltypes=ntuple(Returns(Float32), length(result_shapes))
+        result_eltypes=ntuple(Returns(Float32), length(result_shapes)),
+        output_operand_aliases=Tuple{Int,Int}[]
 )
     length(result_eltypes) == length(result_shapes) || throw(ArgumentError(
         "$(length(result_eltypes)) result eltypes for $(length(result_shapes)) result shapes"
@@ -48,7 +65,8 @@ function _embed_custom_call(call_target_name::AbstractString, operands, result_s
         result_0=rts,
         call_target_name=Reactant.MLIR.IR.Attribute(call_target_name),
         backend_config=_config_attr(backend_config),
-        api_version=Reactant.MLIR.IR.Attribute(Int32(api_version))
+        api_version=Reactant.MLIR.IR.Attribute(Int32(api_version)),
+        output_operand_aliases=_aliases_attr(output_operand_aliases, length(result_shapes))
     )
     
     results = ntuple(length(result_shapes)) do i

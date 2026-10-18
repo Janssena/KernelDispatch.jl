@@ -65,7 +65,7 @@ through `_rev`.
 function KO.execute(::AnyTracedRArray, l::KO.Launch)
     be = reactant_backend()
     # Before any argument is converted: a binary the backend cannot launch from a trace should say so, not fail
-    # on the first value that has no byte form (CUDA.jl's padded `KernelState`, for a KA binary).
+    # on the first value that has no byte form.
     reason = KO.traced_support(be, l.binary)
     reason === nothing || throw(ArgumentError(reason))
     layout = Any[(:bytes, _le_bytes(p)) for p in l.prelude]

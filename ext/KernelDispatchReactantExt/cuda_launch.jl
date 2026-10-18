@@ -6,19 +6,18 @@
 # `triton.proto`: `TritonAnyKernelCall`) directly, so there is no Python and no native code of our own.
 #
 # What the handler cannot do bounds what can be launched this way:
-#   - parameters are device buffers and bool/32-bit/64-bit scalars: no by-value structs. A binary compiled
-#     from a KernelAbstractions kernel (`is_ka`) takes CUDA.jl's `KernelState` and KA's launch context as
-#     struct arguments, so it cannot be launched from a trace; plain pointer-and-scalar binaries (nvcc,
-#     Triton, hand-written PTX) can.
+#   - parameters are device buffers and bool/32-bit/64-bit scalars: no by-value structs. That is why CUDA's
+#     KernelAbstractions binaries (`abi = :ka`) are built flat (no `KernelState`, KA's context as six integers; see
+#     the CUDA extension), and why plain pointer-and-scalar binaries (nvcc, Triton, hand-written PTX) work.
 #   - threads per block are `num_warps * 32`, one-dimensional: `threadgroup` is a multiple of 32.
 #   - XLA hands the handler its operands, then its results, as buffers; each buffer parameter takes the
 #     next one in that order. So a kernel's buffer parameters must list every input before every output.
 #
-# UNVERIFIED ON A GPU. Whether the XLA behind a CUDA client registers such a handler, and under which name, is
-# a property of that client's build, so the convention is selectable:
-# `KERNELDISPATCH_CUDA_CUSTOM_CALL=<target>@<api_version>`, default `triton_kernel_call_ffi@4` (the typed-FFI
-# form jax-triton uses; the proto travels in an `opaque` attribute). `test/cuda_probe.jl` tries the
-# combinations on a machine with a GPU and says which ones launch.
+# Confirmed with `test/cuda_probe.jl` on an NVIDIA machine: Reactant's CUDA client launches a plain cubin or PTX
+# through `triton_kernel_call_ffi@4` (the typed-FFI form jax-triton uses; the proto travels in an `opaque`
+# attribute), which is the default. `triton_kernel_call@2` launched a cubin but not PTX there, and
+# `triton_kernel_call@4` was rejected. The convention is selectable for other XLA builds:
+# `KERNELDISPATCH_CUDA_CUSTOM_CALL=<target>@<api_version>`; the probe tries the combinations.
 #
 # Note for Reactant's own client: its compile pipeline has a `raise_triton_custom_call` pass that rewrites a
 # custom call named exactly `triton_kernel_call` into a Triton-dialect op and compiles the Triton IR in the
@@ -175,14 +174,6 @@ function _cuda_params(layout, result_shapes, result_eltypes)
         "$(join(string.(first.(buffers), ":", last.(buffers)), ", ")). Reorder the kernel's parameters."))
     return params
 end
-
-# XLA's kernel-call handler passes buffers and plain scalars only, so a binary with struct arguments (a KA
-# binary: CUDA.jl's `KernelState` and KA's launch context) cannot be launched from a trace.
-KO.traced_support(::KO.CUDABackendTag, b::KO.KernelBinary) = b.abi === :ka ?
-    "binary `$(b.entry)` was compiled from a KernelAbstractions kernel, which takes CUDA.jl's kernel state " *
-    "and KA's launch context as struct arguments; XLA's kernel-call handler passes only buffers and " *
-    "plain scalars, so it cannot be launched from a traced program. Launch it eagerly, or use a plain " *
-    "pointer-and-scalar binary (nvcc, Triton, PTX)." : nothing
 
 """
     KernelDispatch.custom_call(::CUDABackendTag, entry, path, operands, result_shapes, layout; grid,

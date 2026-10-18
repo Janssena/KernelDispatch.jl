@@ -44,8 +44,9 @@ compatible_target(::KernelBackend, ::KernelBinary) = nothing
 
 `nothing` when `b` can be launched from a Reactant trace on `backend`, else why not. Asked at the top of the
 traced `execute`, before any argument is converted, so the reason reaches the user instead of whatever the
-unsupported binary would have tripped over first. The default accepts everything; the Reactant extension
-refuses, for CUDA, a binary with struct arguments (`abi = :ka`), which XLA's kernel-call handler cannot pass.
+unsupported binary would have tripped over first. The default accepts everything, and so does every backend today:
+CUDA's KA binaries are built flat (pointers and scalars only), which XLA's kernel-call handler can pass. A backend
+whose custom call cannot carry some binary (struct arguments, say) overrides this to say why.
 """
 traced_support(::KernelBackend, ::KernelBinary) = nothing
 

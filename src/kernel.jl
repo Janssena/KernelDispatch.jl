@@ -58,7 +58,8 @@ One compiled launch, everything about it persisted with it in the manifest.
 - `abi` says what the binary takes besides the arguments `call_binary` binds, so the launcher can supply
   it. `:plain` (the default) takes nothing: buffers and scalars, in the order given. `:ka` marks a binary
   compiled from a KernelAbstractions kernel ([`ka_compile`](@ref) sets it): it takes the backend's
-  [`ka_state_words`](@ref) and KA's launch context ahead of its arguments, and is dispatched flat. An
+  [`ka_state_words`](@ref) and KA's launch context ahead of its arguments (in the form the backend's
+  [`ka_prelude`](@ref) gives; CUDA passes the context as six integers), and is dispatched flat. An
   extension can define another ABI (see `abi_prelude_and_grid`). It is a property of the binary, not of
   the kernel type that holds it: one kernel can register a KA-compiled binary for one launch and a Triton
   one for another. (`is_ka=true` and `b.is_ka` remain as deprecated aliases for `abi=:ka`.)
