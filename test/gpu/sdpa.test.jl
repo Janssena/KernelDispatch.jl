@@ -82,3 +82,23 @@ else
         Reactant.set_default_backend(prev)
     end
 end
+
+# CUDA: the KA kernel traced, through XLA's kernel-call handler. `sdpa_ka!` puts its output first (`o, q, k, v, ...`):
+# the launcher passes the output as an aliased operand in that position.
+if GPU === :cuda
+    prev = Reactant.XLA.default_backend()
+    Reactant.set_default_backend("gpu")
+    try
+        @testset "Reactant on CUDA (SDPAKA, output first)" begin
+            rng = Xoshiro(4)
+            for (d, n, m, dv) in SDPA_SIZES
+                q, k, v = inputs(rng, d, n, m, dv)
+                args = map(Reactant.to_rarray, (q, k, v))
+                f(q, k, v) = KernelDispatch.forward(SDPA(), SDPAKA(), q, k, v)
+                @test Array(@jit f(args...)) ≈ sdpa_reference(q, k, v) rtol = 1e-3
+            end
+        end
+    finally
+        Reactant.set_default_backend(prev)
+    end
+end

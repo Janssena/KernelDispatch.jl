@@ -86,15 +86,33 @@ end
         shared_mem=0, grid=(1, 1, 1), params=[(:scalar, UInt8[1, 2])], name="k")   # 2 bytes: no such kind
 end
 
-@testset "buffer order and layout" begin
-    shapes, types = [(4,)], (Float32,)
-    ok = RXC._cuda_params([(:in, 0), (:in, 1), (:out, 0), (:bytes, "[0,0,0,64]")], [(4,), (4,)][1:1], types)
-    @test [k for (k, _) in ok] == [:array, :array, :array, :scalar]
-    zeroed = RXC._cuda_params([(:in, 0), (:out_zero, 0)], shapes, types)
-    @test zeroed[2] == (:array, 16)                                             # 4 Float32 elements
-    # An output before an input cannot be expressed: XLA hands over operands, then results.
-    @test_throws ArgumentError RXC._cuda_params([(:out, 0), (:in, 0)], shapes, types)
-    @test_throws ArgumentError RXC._cuda_params([(:in, 1), (:in, 0), (:out, 0)], shapes, types)
+@testset "buffer order and layout: every output is an aliased operand in the kernel's own position" begin
+    seen = Ref{Any}()
+    function record(layout, shapes, types, xs)
+        params, bufs, aliases = RXC._cuda_launch_operands(layout, xs, shapes, types)
+        seen[] = (; kinds=[k for (k, _) in params], nbuf=length(bufs), aliases)
+    end
+    function capture(layout, shapes, types, x)
+        g(x) = (record(layout, shapes, types, (x,)); x)
+        Reactant.@code_hlo optimize = false g(Reactant.to_rarray(x))
+        return seen[]
+    end
+    function capture(layout, shapes, types, x, w)
+        g(x, w) = (record(layout, shapes, types, (x, w)); x)
+        Reactant.@code_hlo optimize = false g(Reactant.to_rarray(x), Reactant.to_rarray(w))
+        return seen[]
+    end
+    x, w = rand(Float32, 4), rand(Float32, 2, 3)
+    # inputs first (the old contract), output first (`f!(out, in...)`), output between scalars
+    @test capture([(:in, 0), (:out, 0), (:bytes, "[0,0,0,64]")], [(4,)], (Float32,), x) ==
+        (; kinds=[:array, :array, :scalar], nbuf=2, aliases=[(0, 1)])
+    @test capture([(:out, 0), (:in, 0), (:bytes, "[0,0,0,64]")], [(4,)], (Float32,), x) ==
+        (; kinds=[:array, :array, :scalar], nbuf=2, aliases=[(0, 0)])
+    @test capture([(:in, 0), (:bytes, "[1,0,0,0]"), (:out_zero, 0), (:bytes, "[0,0,0,64]")], [(4,)], (Float32,), x) ==
+        (; kinds=[:array, :scalar, :array, :scalar], nbuf=2, aliases=[(0, 1)])
+    # two outputs, interleaved with two inputs: each result aliases the operand at its own position
+    @test capture([(:in, 0), (:out, 1), (:in, 1), (:out, 0)], ((4,), (3, 2)), (Float32, Float32), x, w) ==
+        (; kinds=[:array, :array, :array, :array], nbuf=4, aliases=[(1, 1), (0, 3)])
 end
 
 @testset "custom_call(::CUDABackendTag) emission" begin
@@ -112,6 +130,11 @@ end
     x = Reactant.to_rarray(rand(Float32, 4))
     ir = repr(Reactant.@code_hlo optimize = false f(x))
     @test occursin("triton_kernel_call_ffi", ir) && occursin("api_version = 4", ir) && occursin("opaque", ir)
+    # the output rides as a zero operand, aliased to its result
+    @test occursin("output_operand_alias", ir) && occursin("stablehlo.constant dense<0.000000e+00>", ir)
+    out_first(x) = KernelDispatch.custom_call(tag, "scale", cubin, (x,), [(4,)],
+        [(:out, 0), (:in, 0), (:bytes, "[0,0,0,64]")]; grid=(1, 1, 1), threadgroup=64, result_eltypes=(Float32,))[1]
+    @test occursin("output_operand_alias", repr(Reactant.@code_hlo optimize = false out_first(x)))      # no ordering error
 
     # The legacy convention: a string and api_version 2, which that pass would rewrite (and reject, there being
     # no Triton IR in the payload) unless it is switched off.

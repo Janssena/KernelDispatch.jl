@@ -151,28 +151,26 @@ end
 _payload_bytes(payload::AbstractString) =
     UInt8[parse(UInt8, strip(x)) for x in split(strip(payload, ['[', ']']), ',') if !isempty(strip(x))]
 
-# The kernel's parameters in order, and the check that its buffers list inputs before outputs.
-function _cuda_params(layout, result_shapes, result_eltypes)
+# The kernel's parameters in order, the operands the handler is given (inputs as they are, each output as a
+# zero-filled array in its own position) and which result aliases which operand (0-based, as `_embed_custom_call`
+# takes them). The result is always a fresh buffer of zeros before the kernel runs, `OutArray(...; zero=true)` or not.
+function _cuda_launch_operands(layout, operands, result_shapes, result_eltypes)
     params = Tuple{Symbol,Any}[]
-    buffers = Tuple{Symbol,Int}[]
+    buffers = Any[]
+    aliases = Tuple{Int,Int}[]
     for (kind, val) in layout
         if kind === :bytes
             push!(params, (:scalar, _payload_bytes(val)))
         elseif kind === :in
-            push!(params, (:array, 0)); push!(buffers, (:in, val))
+            push!(params, (:array, 0))
+            push!(buffers, operands[val+1])
         else                                       # :out or :out_zero
-            zero_bytes = kind === :out_zero ? prod(result_shapes[val+1]; init=1) * sizeof(result_eltypes[val+1]) : 0
-            push!(params, (:array, zero_bytes)); push!(buffers, (:out, val))
+            push!(params, (:array, 0))
+            push!(aliases, (val, length(buffers)))
+            push!(buffers, Reactant.Ops.fill(zero(result_eltypes[val+1]), Tuple(result_shapes[val+1])))
         end
     end
-    ins = [i for (k, i) in buffers if k === :in]
-    outs = [i for (k, i) in buffers if k === :out]
-    expected = vcat([(:in, i) for i in 0:length(ins)-1], [(:out, i) for i in 0:length(outs)-1])
-    buffers == expected || throw(ArgumentError(
-        "XLA hands a kernel call its inputs and then its outputs as buffers, in order, so the binary's " *
-        "buffer parameters must list every input before every output (and each group in order); got " *
-        "$(join(string.(first.(buffers), ":", last.(buffers)), ", ")). Reorder the kernel's parameters."))
-    return params
+    return params, Tuple(buffers), aliases
 end
 
 """
@@ -180,7 +178,8 @@ end
         threadgroup, result_eltypes, shared_mem=0)
 
 The CUDA embedding: a `stablehlo.custom_call` to a `triton_kernel_call` handler launching the cubin (or
-`.ptx`) at `path`; see this file's header for what it can and cannot launch, and that it is unverified.
+`.ptx`) at `path`; see this file's header for what it can and cannot launch. Each output is an aliased, zero-filled
+operand in the kernel's own parameter position, so the kernel's buffer order is unrestricted.
 """
 function KO.custom_call(::KO.CUDABackendTag, entry, path, operands, result_shapes, layout;
         grid, threadgroup, result_eltypes=ntuple(Returns(Float32), length(result_shapes)),
@@ -189,13 +188,16 @@ function KO.custom_call(::KO.CUDABackendTag, entry, path, operands, result_shape
         "threadgroup $threadgroup: XLA's kernel-call handler launches `num_warps * 32` threads per block, " *
         "so it must be a multiple of 32 and at most 1024"))
     isfile(path) || throw(ArgumentError("kernel image `$path` not found"))
+    isnothing(reverse) || throw(ArgumentError(
+        "a reverse rule on a CUDA kernel call is not supported: its outputs are aliased operands, which shift " *
+        "the operand indices `active_operands` refers to"))
 
+    params, buffers, aliases = _cuda_launch_operands(layout, operands, result_shapes, result_eltypes)
     proto = _kernel_call_proto(; entry, image=read(path), is_ptx=lowercase(splitext(path)[2]) == ".ptx",
-        num_warps=threadgroup ÷ 32, shared_mem, grid,
-        params=_cuda_params(layout, result_shapes, result_eltypes), name=entry)
+        num_warps=threadgroup ÷ 32, shared_mem, grid, params, name=entry)
     opaque = String(_zlib_stored(proto))
     target, api = _cuda_call_convention()
     config = api >= 4 ? Dict("opaque" => opaque) : opaque
-    return _embed_custom_call(target, operands, result_shapes; backend_config=config,
-        api_version=api, reverse, active_operands, label=entry, result_eltypes)
+    return _embed_custom_call(target, buffers, result_shapes; backend_config=config,
+        api_version=api, label=entry, result_eltypes, output_operand_aliases=aliases)
 end

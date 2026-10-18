@@ -10,7 +10,7 @@
 #   1 backend registered      4 ka_compile -> .cubin        7 views and offsets      10 SDPAOps (KA kernel)
 #   2 array routing           5 load + thread limit         8 timing                 11 launch-size checks
 #   3 KA context and prelude  6 run_binary vs host          9 Residual fwd/bwd + Enzyme  12 .cubin and .ptx binaries  13 target architecture
-#   14 Triton ABI                 15 flat KA binary, traced
+#   14 Triton ABI                 15 flat KA binary, traced   16 output-first KA kernels, traced
 #
 # `JULIA_DEBUG=KernelDispatchCUDAExt` additionally logs the entry point, image size and launch geometry.
 
@@ -242,6 +242,39 @@ stage("15 flat KA binary, traced through XLA's kernel-call handler") do
     ok || foreach(l -> println("      ", first(l, 220)),
         first(filter(l -> occursin(r"error|Error|ERROR|No registered|custom call|FATAL|RESULT", l), split(text, "\n")), 8))
     check(ok, "the traced launch of a flat KA binary did not produce the host result")
+end
+
+stage("16 output-first KA kernels, traced (aliased outputs)") do
+    # The fixtures' kernels put their output first (`f!(out, in...)`); one has two outputs. XLA's handler gets each
+    # output as an aliased operand in the kernel's position. In a child process: an XLA fatal error costs one stage.
+    code = quote
+        using Random, KernelDispatch, KernelAbstractions, CUDA, Reactant
+        include($(joinpath(@__DIR__, "fixtures.jl")))
+        Reactant.set_default_backend("gpu")
+        rng = Xoshiro(7)
+        register_logit_scale!(); register_residual!()
+        x = randn(rng, Float32, 100)
+        y = Array(Reactant.@jit logit_scale(Reactant.to_rarray(x), 2.0f0; out_len=128))
+        ok1 = y[1:100] ≈ 2.0f0 .* x && all(iszero, y[101:128])
+        n = 64
+        a, b, dz = randn(rng, Float32, n), randn(rng, Float32, n), randn(rng, Float32, n)
+        fwd(a, b) = KernelDispatch.forward(Residual(), ResidualKA(), a, b, 3.0f0)
+        ok2 = Array(Reactant.@jit fwd(Reactant.to_rarray(a), Reactant.to_rarray(b))) ≈ 3.0f0 .* a .+ b
+        g(a, b, dz) = KernelDispatch.backward(Residual(), ResidualKA(), (a, b, 3.0f0), a, dz)[1:2]
+        gx, gy = Reactant.@jit g(Reactant.to_rarray(a), Reactant.to_rarray(b), Reactant.to_rarray(dz))
+        ok3 = Array(gx) ≈ 3.0f0 .* dz && Array(gy) ≈ dz
+        println("one output first: ", ok1, "; forward: ", ok2, "; two outputs (backward): ", ok3)
+        println(ok1 && ok2 && ok3 ? "RESULT ok" : "RESULT wrong values")
+    end
+    src = join(string.(filter(a -> !(a isa LineNumberNode), code.args)), "\n")
+    out = IOBuffer()
+    proc = run(pipeline(ignorestatus(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $src`); stdout=out, stderr=out))
+    text = String(take!(out))
+    println("\n", join(filter(l -> occursin("one output first", l), split(text, "\n")), "\n"))
+    ok = success(proc) && occursin("RESULT ok", text)
+    ok || foreach(l -> println("      ", first(l, 220)),
+        first(filter(l -> occursin(r"error|Error|ERROR|No registered|custom call|FATAL|RESULT", l), split(text, "\n")), 8))
+    check(ok, "a traced output-first KA launch did not produce the host result")
 end
 
 println("\n════════ summary ════════")

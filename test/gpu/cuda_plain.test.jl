@@ -89,17 +89,27 @@ if GPU === :cuda
                 @test Array(@jit f(Reactant.to_rarray(x))) ≈ 2.0f0 .* x
             end
 
-            @testset "an output before an input is refused with the reason (until XLA's order is lifted)" begin
+            # The kernels below put their OUTPUT FIRST (`f!(out, in...)`): each output is passed to XLA's handler as an
+            # aliased operand in the kernel's own position, so the order of a kernel's buffers is unrestricted.
+            @testset "output-first KA kernel, traced (logit_scale: y, x, ...; zero-filled tail)" begin
                 register_logit_scale!()
-                x = Reactant.to_rarray(randn(rng, Float32, 100))
-                f(x) = logit_scale(x, 2.0f0)               # `logit_scale_kernel!(y, x, ...)`: the output first
-                err = try
-                    Reactant.@compile f(x)
-                    nothing
-                catch e
-                    e
-                end
-                @test err !== nothing && occursin("every input before every output", sprint(showerror, err))
+                x = randn(rng, Float32, 100)
+                f(x) = logit_scale(x, 2.0f0; out_len=128)
+                y = Array(@jit f(Reactant.to_rarray(x)))
+                @test y[1:100] ≈ 2.0f0 .* x
+                @test all(iszero, y[101:128])
+            end
+
+            @testset "two outputs, traced (Residual: forward, and backward -> dx, dy)" begin
+                isempty(KernelDispatch.variants(Residual(), ResidualKA())) && register_residual!()
+                n = 64
+                x, y, dz = randn(rng, Float32, n), randn(rng, Float32, n), randn(rng, Float32, n)
+                fwd(x, y) = KernelDispatch.forward(Residual(), ResidualKA(), x, y, 3.0f0)
+                @test Array(@jit fwd(Reactant.to_rarray(x), Reactant.to_rarray(y))) ≈ 3.0f0 .* x .+ y
+                g(x, y, dz) = KernelDispatch.backward(Residual(), ResidualKA(), (x, y, 3.0f0), x, dz)[1:2]
+                gx, gy = @jit g(Reactant.to_rarray(x), Reactant.to_rarray(y), Reactant.to_rarray(dz))
+                @test Array(gx) ≈ 3.0f0 .* dz
+                @test Array(gy) ≈ dz
             end
         finally
             Reactant.set_default_backend(prev)

@@ -18,6 +18,9 @@
 #   order  yxan   output first (`f!(out, in...)`)       plain: expected to fail; alias: the question
 #   order  xayn   a scalar between the two buffers      plain: expected PASS; alias: the question
 #
+# RESULT (A40, probe_order.log): the aliased-operand layout works in every order; plain output-first gives silently wrong
+# values. It is now what `custom_call(::CUDABackendTag)` emits.
+#
 # The launches use the `triton_kernel_call_ffi@4` convention, PTX images, built by the package's own encoder.
 
 using Random, KernelDispatch, CUDA
