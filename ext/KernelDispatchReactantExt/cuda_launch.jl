@@ -176,27 +176,30 @@ function _cuda_params(layout, result_shapes, result_eltypes)
     return params
 end
 
+# XLA's kernel-call handler passes buffers and plain scalars only, so a binary with struct arguments (a KA
+# binary: CUDA.jl's `KernelState` and KA's launch context) cannot be launched from a trace.
+KO.traced_support(::KO.CUDABackendTag, b::KO.KernelBinary) = b.abi === :ka ?
+    "binary `$(b.entry)` was compiled from a KernelAbstractions kernel, which takes CUDA.jl's kernel state " *
+    "and KA's launch context as struct arguments; XLA's kernel-call handler passes only buffers and " *
+    "plain scalars, so it cannot be launched from a traced program. Launch it eagerly, or use a plain " *
+    "pointer-and-scalar binary (nvcc, Triton, PTX)." : nothing
+
 """
     KernelDispatch.custom_call(::CUDABackendTag, entry, path, operands, result_shapes, layout; grid,
-        threadgroup, result_eltypes, is_ka=false, shared_mem=0)
+        threadgroup, result_eltypes, shared_mem=0)
 
 The CUDA embedding: a `stablehlo.custom_call` to a `triton_kernel_call` handler launching the cubin (or
 `.ptx`) at `path`; see this file's header for what it can and cannot launch, and that it is unverified.
 """
 function KO.custom_call(::KO.CUDABackendTag, entry, path, operands, result_shapes, layout;
         grid, threadgroup, result_eltypes=ntuple(Returns(Float32), length(result_shapes)),
-        is_ka::Bool=false, shared_mem::Integer=0, reverse=nothing, active_operands=nothing)
-    is_ka && throw(ArgumentError(
-        "binary `$entry` was compiled from a KernelAbstractions kernel, which takes CUDA.jl's kernel state " *
-        "and KA's launch context as struct arguments; XLA's kernel-call handler passes only buffers and " *
-        "plain scalars, so it cannot be launched from a traced program. Launch it eagerly, or use a plain " *
-        "pointer-and-scalar binary (nvcc, Triton, PTX)."))
+        shared_mem::Integer=0, reverse=nothing, active_operands=nothing)
     (threadgroup % 32 == 0 && 0 < threadgroup <= 1024) || throw(ArgumentError(
         "threadgroup $threadgroup: XLA's kernel-call handler launches `num_warps * 32` threads per block, " *
         "so it must be a multiple of 32 and at most 1024"))
     isfile(path) || throw(ArgumentError("kernel image `$path` not found"))
 
-    proto = _kernel_call_proto(; entry, image=read(path), is_ptx=endswith(path, ".ptx"),
+    proto = _kernel_call_proto(; entry, image=read(path), is_ptx=lowercase(splitext(path)[2]) == ".ptx",
         num_warps=threadgroup ÷ 32, shared_mem, grid,
         params=_cuda_params(layout, result_shapes, result_eltypes), name=entry)
     opaque = String(_zlib_stored(proto))

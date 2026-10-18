@@ -63,6 +63,11 @@ operand, an `OutArray` a result (`zero` ones zero-filled by jax-mps), a `Val` no
 through `_rev`.
 """
 function KO.execute(::AnyTracedRArray, l::KO.Launch)
+    be = reactant_backend()
+    # Before any argument is converted: a binary the backend cannot launch from a trace should say so, not fail
+    # on the first value that has no byte form (CUDA.jl's padded `KernelState`, for a KA binary).
+    reason = KO.traced_support(be, l.binary)
+    reason === nothing || throw(ArgumentError(reason))
     layout = Any[(:bytes, _le_bytes(p)) for p in l.prelude]
     operands, shapes, eltypes = Any[], Any[], DataType[]
     for a in (l.args..., l.extras...)
@@ -78,8 +83,10 @@ function KO.execute(::AnyTracedRArray, l::KO.Launch)
         end
     end
     b = l.binary
-    results = KO.custom_call(reactant_backend(), b.entry, b.file, Tuple(operands), shapes, layout;
-        grid=l.grid, threadgroup=b.threadgroup, result_eltypes=Tuple(eltypes), is_ka=b.is_ka)
+    # A Triton binary's hidden trailing pointers: null words after the arguments (see `triton_binary`).
+    append!(layout, ((:bytes, _le_bytes(UInt64(0))) for _ in 1:KO.trailing_pointers(b)))
+    results = KO.custom_call(be, b.entry, b.file, Tuple(operands), shapes, layout;
+        grid=l.grid, threadgroup=b.threadgroup, shared_mem=b.shared_mem, result_eltypes=Tuple(eltypes))
     return Tuple(map(_rev, results))
 end
 

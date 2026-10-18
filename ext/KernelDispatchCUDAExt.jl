@@ -89,16 +89,34 @@ end
 _arg(a::CuArray) = pointer(a)
 _arg(a) = a
 
-function _launch(f, slots, grid::NTuple{3,Int}, tg::Integer)
-    args = Tuple(map(_arg, slots))
-    @debug "launching CUDA kernel" blocks = grid threads = tg nargs = length(args)
-    CUDACore.cudacall(f, Tuple{map(typeof, args)...}, args...; blocks=grid, threads=(Int(tg), 1, 1))
+# Dynamic shared memory above the default 48 KB must be allowed on the function before a launch asks for it.
+const _DEFAULT_SHARED = 48 * 1024
+const _SHARED_RAISED = Dict{Tuple{Any,Int},Nothing}()     # (function, bytes) already allowed
+
+function _allow_shared(f, bytes::Integer)
+    bytes > _DEFAULT_SHARED || return nothing
+    get!(_SHARED_RAISED, (f, Int(bytes))) do
+        CUDACore.attributes(f)[CUDACore.FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES] = Int(bytes)
+        nothing
+    end
+    return nothing
+end
+
+# One launch of `b`: its function, its dynamic shared memory, and (for a Triton binary) the hidden trailing null
+# pointers its compiled signature ends with, after the slots.
+function _launch(b::KO.KernelBinary, slots, grid::NTuple{3,Int})
+    f = _function(b.file, b.entry)
+    args = (map(_arg, slots)..., ntuple(_ -> CUDACore.CuPtr{Cvoid}(0), KO.trailing_pointers(b))...)
+    _allow_shared(f, b.shared_mem)
+    @debug "launching CUDA kernel" blocks = grid threads = b.threadgroup shmem = b.shared_mem nargs = length(args)
+    CUDACore.cudacall(f, Tuple{map(typeof, args)...}, args...; blocks=grid, threads=(b.threadgroup, 1, 1),
+        shmem=b.shared_mem)
     return nothing
 end
 
 function KO.encode_launch(::KO.CUDABackendTag, b::KO.KernelBinary, slots, grid::NTuple{3,Int})
     _check_limit(b)
-    _launch(_function(b.file, b.entry), slots, grid, b.threadgroup)
+    _launch(b, slots, grid)
     CUDACore.synchronize()          # also throws a device-side exception host-side
     return nothing
 end
@@ -113,7 +131,7 @@ function KO.device_time(::KO.CUDABackendTag, items::AbstractVector; reps::Int)
     start, stop = CUDACore.CuEvent(), CUDACore.CuEvent()
     CUDACore.record(start)
     for _ in 1:reps, (b, slots, grid) in items
-        _launch(_function(b.file, b.entry), slots, grid, b.threadgroup)
+        _launch(b, slots, grid)
     end
     CUDACore.record(stop)
     CUDACore.synchronize(stop)
@@ -202,6 +220,22 @@ KO.device_dense(::KO.CUDABackendTag, x::CuArray) = x
 KO.device_dense(::KO.CUDABackendTag, x::WrappedCuArray) = CuArray(x)
 
 KO.ka_backend_object(::KO.CUDABackendTag) = CUDABackend()
+
+# The device's compute capability as a binary's `target` spells it: "sm_86".
+function KO.target_id(::KO.CUDABackendTag)
+    cap = CUDACore.capability(CUDACore.device())
+    return "sm_$(cap.major)$(cap.minor)"
+end
+
+# A cubin is machine code for one architecture family (same major, device minor at least the cubin's); PTX is
+# compiled by the driver when the module loads, so any device at or above its `.target` takes it.
+function KO.compatible_target(be::KO.CUDABackendTag, b::KO.KernelBinary)
+    (isempty(b.target) || KO.binary_format(b) === :ptx) && return nothing
+    dev = KO.target_id(be)
+    KO.cuda_sm_compatible(b.target, dev) && return nothing
+    return "cubin `$(b.entry)` was built for $(b.target), but this device is $dev: rebuild it for this " *
+           "device, or ship PTX, which the driver compiles for any newer device"
+end
 
 # CUDA.jl's KA kernels take its `KernelState` ahead of KA's context.
 KO.ka_state_words(::KO.CUDABackendTag) = (_kernel_state(),)
