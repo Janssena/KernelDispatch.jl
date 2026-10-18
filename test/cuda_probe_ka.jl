@@ -14,6 +14,7 @@
 #        2.0 the rebuilt context equals KA's (host only)
 #        2a  compiled by CUDA.jl as is (its hidden KernelState first parameter should survive)
 #        2b  compiled with the kernel state switched off for that job
+#        2c  the package's own KA kernels (Residual, LogitScale, SDPAOps' sdpa_ka!) compiled state-free
 #   3  launch the best flat variant: eagerly (ground truth), then from a Reactant trace through the handler
 #   4  what Reactant's own KA path lowers to on CUDA (which custom call, if any, it ends in)
 #
@@ -209,6 +210,48 @@ stage("2b flat wrapper, kernel state switched off") do
     println("   -> struct-like (.b8) parameters: ", n_blob)
     stateless_ok[] = n_blob == 0 && !isempty(ps)
     check(stateless_ok[], "a struct parameter is still there")
+end
+
+# --- 2c: the package's own KA kernels, state-free ------------------------------------------------------------------
+
+include(joinpath(@__DIR__, "fixtures.jl"))     # Residual and LogitScale kernels, and SDPAOps (with `sdpa_ka!`)
+
+# A flat entry for any KA kernel: the six context integers, then the kernel's own arguments unchanged
+# (`Val`s are ghost arguments: they stay in the Julia signature and leave the PTX one).
+struct FlatG{F,TG} end
+function (::FlatG{F,TG})(nd1::Int, nd2::Int, nd3::Int, b1::Int, b2::Int, b3::Int, args...) where {F,TG}
+    F.instance(rebuild_ctx(Val(TG), nd1, nd2, nd3, b1, b2, b3), args...)
+    return nothing
+end
+
+const F32 = Vector{Float32}
+const REAL_KERNELS = [      # (label, KA kernel function, argument types in call order)
+    ("residual_fwd!", residual_fwd!, (F32, F32, F32, Float32, Int32, Val{64})),
+    ("residual_bwd!", residual_bwd!, (F32, F32, F32, Float32, Int32, Val{64})),
+    ("logit_scale_kernel!", logit_scale_kernel!, (F32, F32, Float32, Int32, Val{64})),
+    ("logit_scale2_kernel!", logit_scale2_kernel!, (F32, F32, Float32, Int32, Val{64})),
+    ("SDPAOps.sdpa_ka!", SDPAOps.sdpa_ka!, (F32, F32, F32, F32, Int32, Int32, Int32, Int32, Float32, Val{64})),
+]
+
+stage("2c the package's own KA kernels, state-free") do
+    failed = String[]
+    for (label, kernel, argt) in REAL_KERNELS
+        tg = 64
+        ft = FlatG{typeof(kernel(CUDABackend(), tg).f),tg}
+        sig = Tuple{Int,Int,Int,Int,Int,Int,map(EXT._ka_argtype, argt)...}
+        entry = "probe_" * replace(label, r"\W" => "_")
+        println("\n   ", label)
+        for (job, cfg) in (("default job (with state)", nothing), ("state-free job", stateless_config(entry * "_nostate")))
+            try
+                ps = ptx_params(ptx_of(ft, sig; name=job == "state-free job" ? entry * "_nostate" : entry, config=cfg))
+                println("      ", rpad(job, 26), "compiles: ", length(ps), " params, ", count(p -> occursin(".b8", p), ps), " struct blob(s)")
+            catch err
+                println("      ", rpad(job, 26), "FAILS: ", compact(err))
+                job == "state-free job" && push!(failed, label)
+            end
+        end
+    end
+    check(isempty(failed), "state-free compile failed for: " * join(failed, ", "))
 end
 
 # --- 3: launch the best flat variant ----------------------------------------------------------------------------
