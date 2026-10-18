@@ -112,11 +112,37 @@ end
     @test_throws ArgumentError KernelBinary(f; threadgroup=64, tile=(1, 1, 1, 1))
 end
 
+@testset "binary ABI and target" begin
+    f = fake_bin("abi")
+    b = KernelBinary(f; threadgroup=64)
+    @test b.abi === :plain && !b.is_ka && b.target == ""
+    ka = KernelBinary(f; threadgroup=64, abi=:ka, target="sm_80")
+    @test ka.abi === :ka && ka.is_ka && ka.target == "sm_80"
+    # `is_ka` is a deprecated alias, as keyword and as property.
+    @test KernelBinary(f; threadgroup=64, is_ka=true) == KernelBinary(f; threadgroup=64, abi=:ka)
+    @test :is_ka in propertynames(b)
+    # Field access stays inferred through the `getproperty` shim (the symbol must be a literal for that).
+    is_ka_of(b) = b.is_ka; abi_of(b) = b.abi
+    @test (@inferred is_ka_of(b)) isa Bool
+    @test (@inferred abi_of(b)) isa Symbol
+
+    # The two built-in ABIs are known to the core; another is an extension's, and refused until one provides it.
+    x = rand(Float32, 4)
+    exotic = KernelBinary(f; threadgroup=64, abi=:exotic)
+    e = try KO.prepare_launch(exotic, x; extent=4); nothing catch e; e end
+    @test e isa ArgumentError && occursin(":exotic", e.msg)
+    KO.abi_prelude_and_grid(::Val{:exotic}, be::KO.KernelBackend, b::KernelBinary, groups) =
+        (Any[UInt32(7)], (groups[1], 1, 1))
+    l = @inferred KO.prepare_launch(exotic, x; extent=4)
+    @test l.prelude == Any[UInt32(7)] && l.grid == (1, 1, 1)
+    @test isempty(KO.prepare_launch(b, x; extent=4).prelude)                 # :plain takes nothing
+end
+
 @testset "variants and the manifest" begin
     for n in (64, 256)
         add_variant!(Residual(), Other(), (:Float32, n);
             fwd=KernelBinary(fake_bin("f$n"); threadgroup=32, params=(; tg=32, rows=n), is_ka=n == 256,
-                tile=(n == 256 ? (8, 4) : 32)))
+                tile=(n == 256 ? (8, 4) : 32), target=(n == 256 ? "sm_80" : "")))
     end
     vs = KO.variants(Residual(), Other())
     @test length(vs) == 2
@@ -143,6 +169,13 @@ end
     @test !KO.variant(Residual(), Other(), (:Float32, 64))[:fwd].is_ka
     @test KO.variant(Residual(), Other(), (:Float32, 256))[:fwd].tile == (8, 4, 1)
     @test KO.variant(Residual(), Other(), (:Float32, 64))[:fwd].tile == (32, 1, 1)
+    # So do the ABI and the target it was built for.
+    @test KO.variant(Residual(), Other(), (:Float32, 256))[:fwd].abi === :ka
+    @test KO.variant(Residual(), Other(), (:Float32, 64))[:fwd].abi === :plain
+    @test KO.variant(Residual(), Other(), (:Float32, 256))[:fwd].target == "sm_80"
+    @test KO.variant(Residual(), Other(), (:Float32, 64))[:fwd].target == ""
+    mtext = read(joinpath(KO.cache_dir(Residual()), "other", "manifest.toml"), String)
+    @test occursin("format_version = 2", mtext) && occursin("abi = \"ka\"", mtext) && !occursin("is_ka", mtext)
 
     # A manifest from before `tile` existed loads with the default, one item per thread.
     path = joinpath(KO.cache_dir(Residual()), "other", "manifest.toml")
@@ -151,11 +184,52 @@ end
     register_kernel!(Residual(), Other())
     @test KO.variant(Residual(), Other(), (:Float32, 256))[:fwd].tile == (32, 1, 1)
 
+    # A version-1 manifest (`is_ka` instead of `abi`, no `target`, no `format_version`) loads too.
+    old = filter(l -> !occursin(r"^\s*(target|format_version)\s*=", l), readlines(path))
+    old = [replace(l, "abi = \"ka\"" => "is_ka = true", "abi = \"plain\"" => "is_ka = false") for l in old]
+    write(path, join(old, "\n"))
+    empty!(KO.variants(Residual(), Other()))
+    register_kernel!(Residual(), Other())
+    @test KO.variant(Residual(), Other(), (:Float32, 256))[:fwd].abi === :ka
+    @test KO.variant(Residual(), Other(), (:Float32, 64))[:fwd].abi === :plain
+    @test KO.variant(Residual(), Other(), (:Float32, 64))[:fwd].target == ""
+
     # A manifest written from other sources is ignored.
     write(path, replace(read(path, String), "source_tag = \"v1\"" => "source_tag = \"old\""))
     empty!(KO.variants(Residual(), Other()))
     register_kernel!(Residual(), Other())
     @test isempty(KO.variants(Residual(), Other()))
+end
+
+@testset "per-target directories" begin
+    @test KO.current_target() == ""                       # no device backend here
+    r, o = Residual(), Other()
+    @test KO.kernel_dir(r, o) == KO.kernel_dir(r, o; target="") == joinpath(KO.cache_dir(r), "other")
+    @test KO.kernel_dir(r, o; target="sm_80") == joinpath(KO.cache_dir(r), "sm_80", "other")
+    @test KO.ka_binary_cache_dir() == joinpath(KO.cache_root(), "ka")
+    @test KO.ka_binary_cache_dir("sm_80") == joinpath(KO.cache_root(), "ka", "sm_80")
+
+    # Variants for two architectures live apart: separate tables, directories and manifests.
+    key = (:Float32, 4096)
+    b80 = KernelBinary(fake_bin("t80"); threadgroup=32, target="sm_80")
+    b90 = KernelBinary(fake_bin("t90"); threadgroup=32, target="sm_90")
+    KO._add_variant!(r, o, key, (; fwd=b80), "sm_80")
+    KO._add_variant!(r, o, key, (; fwd=b90), "sm_90")
+    v80, v90 = KO.variant(r, o, key; target="sm_80"), KO.variant(r, o, key; target="sm_90")
+    @test v80[:fwd].target == "sm_80" && v90[:fwd].target == "sm_90"
+    @test dirname(v80[:fwd].file) == KO.kernel_dir(r, o; target="sm_80")
+    @test dirname(v90[:fwd].file) == KO.kernel_dir(r, o; target="sm_90")
+    @test isfile(KO.manifest_path(r, o; target="sm_80")) && isfile(KO.manifest_path(r, o; target="sm_90"))
+    @test !haskey(KO.variants(r, o), key)                  # the default target is untouched
+
+    # And reload separately from their manifests.
+    empty!(KO.variants(r, o; target="sm_80")); empty!(KO.variants(r, o; target="sm_90"))
+    @test KO.load_manifest(r, o; target="sm_80")[key][:fwd].file == v80[:fwd].file
+    @test KO.load_manifest(r, o; target="sm_90")[key][:fwd].file == v90[:fwd].file
+
+    # Re-registering under one target prunes only that target's files.
+    KO._add_variant!(r, o, key, (; fwd=KernelBinary(fake_bin("t80b"); threadgroup=32, target="sm_80")), "sm_80")
+    @test isfile(v90[:fwd].file)
 end
 
 @testset "host path" begin
@@ -213,7 +287,7 @@ KernelDispatch.cache_dir(::Plainly) = joinpath(LAZY_CACHE, "plainly")
 
     # Variants persisted in an earlier "session" are found without registering.
     add_variant!(Plainly(), LazyK(), (:a,); fwd=KernelBinary(fake_bin("lazy"); threadgroup=8))
-    delete!(KO.VARIANTS, (Plainly, LazyK))
+    delete!(KO.VARIANTS, (Plainly, LazyK, ""))
     @test !haskey(KO.KERNELS, :Plainly)
     @test KO.variant(Plainly(), LazyK(), (:a,))[:fwd].threadgroup == 8
 

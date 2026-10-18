@@ -9,8 +9,8 @@
 
 using Test
 
-const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "custom_call", "cuda_launch"]
-const GPU_SECTIONS = ["launch", "gpu_inference", "gpu_sdpa", "reactant", "cuda_plain"]
+const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "custom_call", "cuda_launch", "binary_checks", "triton"]
+const GPU_SECTIONS = ["conformance", "launch", "gpu_inference", "gpu_sdpa", "reactant", "cuda_plain"]
 const GROUPS = ["cpu", "gpu"]
 unknown = setdiff(ARGS, [CPU_SECTIONS; GPU_SECTIONS; GROUPS])
 isempty(unknown) || error("unknown test section(s) $unknown; known: $([GROUPS; CPU_SECTIONS; GPU_SECTIONS])")
@@ -52,6 +52,14 @@ has_gpu || !any(gpu, GPU_SECTIONS) || @warn "the GPU section is skipped: no usab
             include("cpu/custom_call.test.jl")      # Reactant, but never runs a kernel
         end
 
+        cpu("binary_checks") && @testset "binary formats, targets, traced support" begin
+            include("cpu/binary_checks.test.jl")
+        end
+
+        cpu("triton") && @testset "Triton binaries (metadata, ABI, shared memory)" begin
+            include("cpu/triton.test.jl")
+        end
+
         cpu("cuda_launch") && @testset "traced CUDA launch (encoding, no GPU)" begin
             include("cpu/cuda_launch.test.jl")
         end
@@ -59,6 +67,10 @@ has_gpu || !any(gpu, GPU_SECTIONS) || @warn "the GPU section is skipped: no usab
 
     if has_gpu
         @testset "GPU ($GPU)" begin
+            gpu("conformance") && @testset "backend conformance" begin
+                include("gpu/conformance.test.jl")
+            end
+
             gpu("launch") && @testset "eager launches" begin
                 include("gpu/launch.test.jl")
             end

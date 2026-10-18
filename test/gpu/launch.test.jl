@@ -114,6 +114,7 @@ begin
         p1 = b1.file
         @test b1 isa KernelBinary && b1.is_ka && b1.threadgroup == 64 && b1.params == (; tg=64)
         @test b1.tile == (64, 1, 1)
+        @test b1.abi === :ka && b1.target == KOM.target_id(GPU_TAG)
         @test isfile(p1) && dirname(p1) == KernelDispatch.ka_binary_cache_dir()
         # Found, not rebuilt; the registry copy is what a variant uses.
         t = mtime(p1)

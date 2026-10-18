@@ -62,5 +62,6 @@ function scale_binaries(dir::AbstractString; threadgroup=64)
     arch = "sm_$(cap.major)$(cap.minor)"
     run(`$(CUDACore.CUDA_Compiler.ptxas()) --gpu-name $arch --output-file $cubin $ptx`)
     kw = (; entry="scale", threadgroup)
-    return (ptx=KernelBinary(ptx; kw...), cubin=KernelBinary(cubin; kw...))
+    # The cubin is for this device's architecture; the PTX is portable, so names none.
+    return (ptx=KernelBinary(ptx; kw...), cubin=KernelBinary(cubin; kw..., target=arch))
 end
