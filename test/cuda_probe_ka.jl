@@ -80,12 +80,16 @@ function ptx_of(ftype::Type, sig::Type; name, config=nothing)
     end
 end
 
-# A cubin of the same job (CUDA.jl's own path: PTX, then ptxas).
+# A cubin from the PTX of the same job, by assembling it with the `ptxas` CUDA.jl ships. (Not `CUDACore.compile`:
+# it runs in a frozen world, in which this script's `NoStateParams` methods do not exist yet.)
 function cubin_of(ftype::Type, sig::Type; name, config=nothing)
-    source = GPUC.methodinstance(ftype, sig)
-    config === nothing && (config = CUDACore.compiler_config(CUDACore.device(); kernel=true, name))
-    res = CUDACore.compile(GPUC.CompilerJob(source, config))
-    return res.image, res.entry
+    ptx = ptx_of(ftype, sig; name, config)
+    entry = match(r"\.entry\s+(\S+?)\s*\(", ptx)[1]
+    dir = mktempdir()
+    ptx_file, cubin_file = joinpath(dir, name * ".ptx"), joinpath(dir, name * ".cubin")
+    write(ptx_file, ptx)
+    run(`$(CUDACore.CUDA_Compiler.ptxas()) --gpu-name $(KO.target_id(TAG)) --output-file $cubin_file $ptx_file`)
+    return read(cubin_file), String(entry)
 end
 
 # The `.param` lines of the first `.entry`: the kernel's real parameter list.
