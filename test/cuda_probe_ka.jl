@@ -10,7 +10,8 @@
 # This script only observes; it changes nothing in the package.
 #
 #   1  the compiled signature of a KA kernel as `ka_compile` builds it (what the handler would have to pass)
-#   2  a wrapper entry taking only pointers and scalars that rebuilds KA's context on the device:
+#   2  a wrapper entry taking only pointers and scalars; it rebuilds KA's context (six integers) on the device:
+#        2.0 the rebuilt context equals KA's (host only)
 #        2a  compiled by CUDA.jl as is (its hidden KernelState first parameter should survive)
 #        2b  compiled with the kernel state switched off for that job
 #   3  launch the best flat variant: eagerly (ground truth), then from a Reactant trace through the handler
@@ -105,24 +106,34 @@ function show_params(title, ptx)
     return ps
 end
 
-# `k.kern.f` of the real KA kernel object, as a type, and the pieces the wrapper rebuilds it from.
+# The real KA kernel body, as a type: the wrapper calls its singleton instance.
 const KOBJ = probe_scale!(CUDABackend(), TG)
-const K = typeof(KOBJ)
 const F = typeof(KOBJ.f)
 
-# A kernel entry with a flat signature: the ND-range as three integers, the arrays as pointers, the scalars.
-# It rebuilds KA's launch context on the device, from the same two KA calls the host side uses, and calls the
-# real kernel body. Order: x before y (inputs before outputs, as XLA's handler wants).
-struct Flat{K,F,TG} end
-function (::Flat{K,F,TG})(nd1::Int, nd2::Int, nd3::Int, x, y, a::Float32, n::Int32) where {K,F,TG}
-    kern = K(CUDABackend(), F.instance)
-    ndrange, _, iterspace, _ = KA.launch_config(kern, (nd1, nd2, nd3), (TG, 1, 1))
-    ctx = KA.mkcontext(kern, ndrange, iterspace)
+# KA's launch context for a static workgroup size is six integers (stage 1: 48 bytes): the ND-range and the
+# block counts, as two `CartesianIndices`. Rebuilt here from them directly, with none of `KA.launch_config` /
+# `partition` (those have error paths, which a device cannot compile). Equal to `KO.ka_context`'s (stage 2.0).
+@inline function rebuild_ctx(::Val{TG}, nd1::Int, nd2::Int, nd3::Int, b1::Int, b2::Int, b3::Int) where {TG}
+    ND = KA.NDIteration
+    iterspace = ND.NDRange{3,ND.DynamicSize,ND.StaticSize{(TG, 1, 1)}}(CartesianIndices((b1, b2, b3)), nothing)
+    return KA.CompilerMetadata{ND.DynamicSize,ND.DynamicCheck}(CartesianIndices((nd1, nd2, nd3)), iterspace)
+end
+
+# A kernel entry with a flat signature: the six context integers, the arrays as pointers, the scalars. It
+# rebuilds the context on the device and calls the real kernel body. x before y: inputs before outputs, as XLA's
+# handler wants.
+struct Flat{F,TG} end
+function (::Flat{F,TG})(nd1::Int, nd2::Int, nd3::Int, b1::Int, b2::Int, b3::Int,
+        x, y, a::Float32, n::Int32) where {F,TG}
+    ctx = rebuild_ctx(Val(TG), nd1, nd2, nd3, b1, b2, b3)
     F.instance(ctx, y, x, a, n, Val(TG))
     return nothing
 end
-const FLAT = Flat{K,F,TG}
-const FLAT_SIG = Tuple{Int,Int,Int,EXT.dptr(Float32),EXT.dptr(Float32),Float32,Int32}
+const FLAT = Flat{F,TG}
+const FLAT_SIG = Tuple{Int,Int,Int,Int,Int,Int,EXT.dptr(Float32),EXT.dptr(Float32),Float32,Int32}
+
+# The six integers `KO.ka_context` would put in the context, for `groups` threadgroups.
+flat_ints(groups::NTuple{3,Int}) = (groups[1] * TG, groups[2], groups[3], groups[1], groups[2], groups[3])
 
 # A job whose compiler does not add CUDA.jl's hidden `KernelState` first parameter.
 struct NoStateParams <: CUDACore.AbstractCUDACompilerParams
@@ -149,9 +160,32 @@ end
 
 # --- 2: a flat wrapper -------------------------------------------------------------------------------------------
 
+# The errors of a failed device compile are long; their distinct "Reason:" lines are what matters.
+function compact(err)
+    text = sprint(showerror, err)
+    reasons = unique([strip(l) for l in split(text, '\n') if startswith(l, "Reason:")])
+    return isempty(reasons) ? first(text, 600) : join(reasons, "\n      ")
+end
+
+stage("2.0 the rebuilt context equals KA's (host only)") do
+    for groups in ((2, 1, 1), (3, 2, 1), (1, 1, 4))
+        ref, _ = KO.ka_context(TAG, groups, TG)
+        new = rebuild_ctx(Val(TG), flat_ints(groups)...)
+        check(typeof(new) === typeof(ref), "types differ:\n  $(typeof(new))\n  $(typeof(ref))")
+        bits(c) = (r = Ref(c); GC.@preserve r unsafe_load(Ptr{NTuple{6,Int}}(Base.unsafe_convert(Ptr{Cvoid}, r))))
+        println("\n   groups ", groups, ": KA ", bits(ref), "  rebuilt ", bits(new))
+        check(bits(new) == bits(ref), "the six integers differ")
+    end
+end
+
 flat_ptx = Ref("")
 stage("2a flat wrapper, CUDA.jl's default job") do
-    ptx = ptx_of(FLAT, FLAT_SIG; name="probe_flat")
+    ptx = try
+        ptx_of(FLAT, FLAT_SIG; name="probe_flat")
+    catch err
+        println("\n   compile failed: ", compact(err))
+        rethrow()
+    end
     flat_ptx[] = ptx
     ps = show_params("probe_flat", ptx)
     println("   -> a leading `.b8` blob here is CUDA.jl's KernelState; only `.u64`/`.u32`/`.f32` would be flat")
@@ -160,7 +194,12 @@ end
 
 stateless_ok = Ref(false)
 stage("2b flat wrapper, kernel state switched off") do
-    ptx = ptx_of(FLAT, FLAT_SIG; name="probe_flat0", config=stateless_config("probe_flat0"))
+    ptx = try
+        ptx_of(FLAT, FLAT_SIG; name="probe_flat0", config=stateless_config("probe_flat0"))
+    catch err
+        println("\n   compile failed: ", compact(err))
+        rethrow()
+    end
     ps = show_params("probe_flat0", ptx)
     n_blob = count(p -> occursin(".b8", p), ps)
     println("   -> struct-like (.b8) parameters: ", n_blob)
@@ -184,7 +223,7 @@ stage("3a flat wrapper, eager launch vs host (ground truth)") do
     n = 100
     x = randn(Float32, n)
     groups = cld(n, TG)
-    args = (groups * TG, 1, 1, CuArray(x), OutArray(Float32, n), 2.0f0, Int32(n))
+    args = (flat_ints((groups, 1, 1))..., CuArray(x), OutArray(Float32, n), 2.0f0, Int32(n))
     # With the state present, eager CUDA can still supply it: it is just a leading by-value argument.
     (y,) = stateless_ok[] ? run_binary(bin, args...; extent=n) : run_binary(bin, EXT._kernel_state(), args...; extent=n)
     check(Array(y) ≈ 2.0f0 .* x, "wrong values (max error $(maximum(abs, Array(y) .- 2.0f0 .* x)))")
@@ -197,17 +236,16 @@ stage("3b flat wrapper, traced through XLA's kernel-call handler") do
     code = quote
         using KernelDispatch, CUDA, Reactant
         Reactant.set_default_backend("gpu")
-        file, entry, tg, stand_in = $(flat_file[]), $(flat_entry[]), $(TG), $(stand_in)
+        file, entry, tg, stand_in, ints = $(flat_file[]), $(flat_entry[]), $(TG), $(stand_in), $(flat_ints((cld(100, TG), 1, 1)))
         loose() = KernelBinary(file; entry, threadgroup=tg, tile=tg)
         n = 100
-        groups = cld(n, tg)
         x = randn(Float32, n)
         # The state word, when the kernel still has one: a zero 8-byte scalar in the slot of its first parameter.
         function f(x)
             y = if stand_in
-                run_binary(loose(), UInt64(0), groups * tg, 1, 1, x, OutArray(Float32, n), 2.0f0, Int32(n); extent=n)
+                run_binary(loose(), UInt64(0), ints..., x, OutArray(Float32, n), 2.0f0, Int32(n); extent=n)
             else
-                run_binary(loose(), groups * tg, 1, 1, x, OutArray(Float32, n), 2.0f0, Int32(n); extent=n)
+                run_binary(loose(), ints..., x, OutArray(Float32, n), 2.0f0, Int32(n); extent=n)
             end
             only(y)
         end
