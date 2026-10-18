@@ -57,7 +57,7 @@ else
             bin = register_logit_scale!()[:main]
             # Built inside the traced function: a captured `KernelBinary` (abstract `params`) is not traceable.
             file, entry = bin.file, bin.entry
-            loose() = KernelBinary(file; entry, threadgroup=LS_TG, is_ka=true)
+            loose() = KernelBinary(file; entry, threadgroup=LS_TG, abi=:ka)
             x = randn(rng, Float32, 100)
             f(x) = only(run_binary(loose(), OutArray(Float32, 100), x, 2.0f0, Int32(100), Val(LS_TG);
                 extent=100))

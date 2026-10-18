@@ -105,6 +105,21 @@ end
     end
 end
 
+# The same with the input before the output: XLA's kernel-call handler hands a traced CUDA launch its buffers inputs
+# first, so this is the KA kernel the traced CUDA tests launch (the others put the output first, as Julia's `f!` does).
+@kernel unsafe_indices = true function scale_ins_first!(x, y, a::Float32, n::Int32, ::Val{TG}) where {TG}
+    i = (@index(Group, Linear) - 1) * TG + @index(Local, Linear)
+    if i <= n
+        unsafe_store!(y, a * unsafe_load(x, i), i)
+    end
+end
+
+"Compile `scale_ins_first!` for the loaded device backend (not registered anywhere): `(x, y, a, n, Val)`."
+function compile_scale_ins_first(; tg=LS_TG)
+    argtypes = (Vector{Float32}, Vector{Float32}, Float32, Int32, Val{tg})
+    return ka_compile(KernelDispatch.device_backend(), scale_ins_first!, argtypes; tg, name="test_scale_ins_first_t$tg")
+end
+
 struct LogitScale <: AbstractKernelOp end
 struct LogitScaleKA <: AbstractKernel end
 struct LogitScaleTwo <: AbstractKernel end      # `logit_scale2_kernel!`: two items per thread

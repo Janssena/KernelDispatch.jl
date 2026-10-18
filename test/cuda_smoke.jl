@@ -10,6 +10,7 @@
 #   1 backend registered      4 ka_compile -> .cubin        7 views and offsets      10 SDPAOps (KA kernel)
 #   2 array routing           5 load + thread limit         8 timing                 11 launch-size checks
 #   3 KA context and prelude  6 run_binary vs host          9 Residual fwd/bwd + Enzyme  12 .cubin and .ptx binaries  13 target architecture
+#   14 Triton ABI                 15 flat KA binary, traced
 #
 # `JULIA_DEBUG=KernelDispatchCUDAExt` additionally logs the entry point, image size and launch geometry.
 
@@ -76,10 +77,12 @@ end
 stage("3 KA context and prelude") do
     words = KO.ka_state_words(TAG)
     println("\n   state words: ", map(typeof, words))
+    check(words === (), "a flat KA binary takes no kernel state, got $words")
     ctx, ghost = KO.ka_context(TAG, (2, 1, 1), 64)
     println("   ctx: ", sizeof(ctx), " bytes, ghost=", ghost)
     prelude = KO.ka_prelude(TAG, ctx, ghost)
-    check(length(prelude) == length(words) + !ghost, "prelude has $(length(prelude)) entries")
+    println("   prelude: ", prelude)
+    check(prelude == Any[128, 1, 1, 2, 1, 1], "the flat prelude is the ND-range and the block counts, got $prelude")
     check(KO.ka_grid(TAG, (2, 3, 4)) === (24, 1, 1))
     check(KO.ka_backend_object(TAG) isa CUDABackend)
 end
@@ -91,6 +94,7 @@ stage("4 ka_compile -> .cubin") do
     check(isfile(LS.file) && endswith(LS.file, ".cubin"))
     check(read(LS.file, 4) == UInt8[0x7f, 0x45, 0x4c, 0x46], "not an ELF image (expected a cubin)")
     check(LS.is_ka && LS.tile == (LS_TG, 1, 1))
+    check(LS.params.ka_layout == "flat", "ka_compile did not record the flat layout: $(LS.params)")
 end
 
 stage("5 load + thread limit") do
@@ -159,7 +163,7 @@ stage("10 SDPAOps, KernelAbstractions kernel") do
 end
 
 stage("11 launch-size checks") do
-    big = KernelBinary(LS.file; entry=LS.entry, threadgroup=4096, is_ka=true)
+    big = KernelBinary(LS.file; entry=LS.entry, threadgroup=4096, abi=:ka, params=LS.params)
     x = CuArray(rand(rng, Float32, 64))
     a() = (OutArray(Float32, 64), x, 2.0f0, Int32(64), Val(LS_TG))
     check(try; time_binary(big, a()...; extent=64); false; catch e; e isa ArgumentError; end,
@@ -207,6 +211,37 @@ stage("14 Triton ABI: shared memory and trailing pointers") do
         (y,) = run_binary(tb, CuArray(x), OutArray(Float32, 100), 2.0f0, Int32(100); extent=100)   # tile = 64: 2 blocks
         check(Array(y) ≈ 2.0f0 .* x, "$kind, shared_mem=$shared: wrong values")
     end
+end
+
+stage("15 flat KA binary, traced through XLA's kernel-call handler") do
+    # `scale_ins_first!` (x, y, ...): a KA kernel with its input before its output, built flat by `ka_compile`.
+    ka = compile_scale_ins_first()
+    println("\n   ", ka.file, "; params ", ka.params)
+    check(ka.abi === :ka && ka.params.ka_layout == "flat")
+    n = 100
+    x = randn(rng, Float32, n)
+    (y,) = run_binary(ka, CuArray(x), OutArray(Float32, n), 2.0f0, Int32(n), Val(ka.threadgroup); extent=n)
+    check(Array(y) ≈ 2.0f0 .* x, "eager launch of the flat binary is wrong")
+    code = quote
+        using KernelDispatch, CUDA, Reactant
+        Reactant.set_default_backend("gpu")
+        file, entry, tg = $(ka.file), $(ka.entry), $(ka.threadgroup)
+        loose() = KernelBinary(file; entry, threadgroup=tg, abi=:ka, params=(; ka_layout="flat", tg))
+        n = 100
+        x = randn(Float32, n)
+        f(x) = only(run_binary(loose(), x, OutArray(Float32, n), 2.0f0, Int32(n), Val(tg); extent=n))
+        off = Reactant.CompileOptions(; raise_triton_custom_call=false)
+        y = Array(Reactant.@jit compile_options = off f(Reactant.to_rarray(x)))
+        println(y ≈ 2.0f0 .* x ? "RESULT ok" : "RESULT wrong values (max error $(maximum(abs, y .- 2.0f0 .* x)))")
+    end
+    src = join(string.(filter(a -> !(a isa LineNumberNode), code.args)), "\n")
+    out = IOBuffer()
+    proc = run(pipeline(ignorestatus(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $src`); stdout=out, stderr=out))
+    text = String(take!(out))
+    ok = success(proc) && occursin("RESULT ok", text)
+    ok || foreach(l -> println("      ", first(l, 220)),
+        first(filter(l -> occursin(r"error|Error|ERROR|No registered|custom call|FATAL|RESULT", l), split(text, "\n")), 8))
+    check(ok, "the traced launch of a flat KA binary did not produce the host result")
 end
 
 println("\n════════ summary ════════")

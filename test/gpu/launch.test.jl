@@ -57,7 +57,7 @@ begin
         bin = register_logit_scale!()[:main]
         x = randn(rng, Float32, 300)
         # An unregistered binary: no op, no kernel, no variant.
-        loose = KernelBinary(bin.file; entry=bin.entry, threadgroup=bin.threadgroup, is_ka=true)
+        loose = KernelBinary(bin.file; entry=bin.entry, threadgroup=bin.threadgroup, abi=:ka, params=bin.params)
         y = only(@inferred run_binary(loose, OutArray(Float32, 300), DeviceArray(x), 2.0f0, Int32(300),
             Val(LS_TG); extent=300))
         @test Array(y) ≈ 2.0f0 .* x
@@ -112,7 +112,9 @@ begin
         argtypes = (Vector{Float32}, Vector{Float32}, Float32, Int32, Val{64})
         b1 = ka_compile(be, logit_scale_kernel!, argtypes; tg=64, name="scale_t64", params=(; tg=64))
         p1 = b1.file
-        @test b1 isa KernelBinary && b1.is_ka && b1.threadgroup == 64 && b1.params == (; tg=64)
+        @test b1 isa KernelBinary && b1.is_ka && b1.threadgroup == 64 && b1.params.tg == 64
+        # CUDA records the flat layout it was built with (the hook is `nothing`, and nothing recorded, elsewhere).
+        @test get(b1.params, :ka_layout, nothing) == (isnothing(KOM.ka_layout(GPU_TAG)) ? nothing : String(KOM.ka_layout(GPU_TAG)))
         @test b1.tile == (64, 1, 1)
         @test b1.abi === :ka && b1.target == KOM.target_id(GPU_TAG)
         @test isfile(p1) && dirname(p1) == KernelDispatch.ka_binary_cache_dir()
@@ -162,7 +164,7 @@ begin
         lim = KOM.max_threads(bin)
         @test lim == KOM.max_threads(be, bin) == KOM.max_threads(bin; backend=be)
         @test LS_TG <= lim <= device_max_threads()
-        big = KernelBinary(bin.file; entry=bin.entry, threadgroup=4096, is_ka=true)
+        big = KernelBinary(bin.file; entry=bin.entry, threadgroup=4096, abi=:ka, params=bin.params)
         @test_throws ArgumentError KOM.encode_launch(be, big, Any[], (1, 1, 1))
         @test_throws ArgumentError time_binary(big, ls_args(64)...; extent=64)
         @test_throws ArgumentError time_binary(bin, ls_args(64)...; extent=64, reps=0)

@@ -78,17 +78,28 @@ if GPU === :cuda
                 @test Array(@jit f(Reactant.to_rarray(x))) ≈ 2.0f0 .* x
             end
 
-            @testset "a KernelAbstractions binary says it cannot be traced" begin
+            @testset "a KernelAbstractions binary, traced (built flat, inputs before the output)" begin
+                ka = compile_scale_ins_first()
+                @test ka.abi === :ka && ka.params.ka_layout == "flat"
+                file, entry, tg = ka.file, ka.entry, ka.threadgroup
+                # Built inside the traced function: a captured `KernelBinary` (abstract `params`) is not traceable.
+                loose() = KernelBinary(file; entry, threadgroup=tg, abi=:ka, params=(; ka_layout="flat", tg))
+                x = randn(rng, Float32, 100)
+                f(x) = only(run_binary(loose(), x, OutArray(Float32, 100), 2.0f0, Int32(100), Val(tg); extent=100))
+                @test Array(@jit f(Reactant.to_rarray(x))) ≈ 2.0f0 .* x
+            end
+
+            @testset "an output before an input is refused with the reason (until XLA's order is lifted)" begin
                 register_logit_scale!()
                 x = Reactant.to_rarray(randn(rng, Float32, 100))
-                f(x) = logit_scale(x, 2.0f0)
+                f(x) = logit_scale(x, 2.0f0)               # `logit_scale_kernel!(y, x, ...)`: the output first
                 err = try
                     Reactant.@compile f(x)
                     nothing
                 catch e
                     e
                 end
-                @test err !== nothing && occursin("KernelAbstractions", sprint(showerror, err))
+                @test err !== nothing && occursin("every input before every output", sprint(showerror, err))
             end
         finally
             Reactant.set_default_backend(prev)

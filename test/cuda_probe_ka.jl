@@ -18,6 +18,10 @@
 #   3  launch the best flat variant: eagerly (ground truth), then from a Reactant trace through the handler
 #   4  what Reactant's own KA path lowers to on CUDA (which custom call, if any, it ends in)
 #
+# RESULT (A40, output4.log): the flat route works, and every real KA kernel compiles state-free. It is now the CUDA
+# backend's `:ka` (ext/KernelDispatchCUDAExt.jl: `_rebuild_ctx`, `FlatKA`, `NoStateParams`, `_compile_cubin`); this script
+# stays as the evidence.
+#
 # Each stage prints PASS or FAIL with the full error. The PTX parameter lists and the custom-call target are
 # the findings; they are printed, not asserted.
 

@@ -9,7 +9,7 @@
 
 using Test
 
-const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "custom_call", "cuda_launch", "binary_checks", "triton"]
+const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "custom_call", "cuda_launch", "binary_checks", "triton", "cuda_flat"]
 const GPU_SECTIONS = ["conformance", "launch", "gpu_inference", "gpu_sdpa", "reactant", "cuda_plain"]
 const GROUPS = ["cpu", "gpu"]
 unknown = setdiff(ARGS, [CPU_SECTIONS; GPU_SECTIONS; GROUPS])
@@ -58,6 +58,10 @@ has_gpu || !any(gpu, GPU_SECTIONS) || @warn "the GPU section is skipped: no usab
 
         cpu("triton") && @testset "Triton binaries (metadata, ABI, shared memory)" begin
             include("cpu/triton.test.jl")
+        end
+
+        cpu("cuda_flat") && @testset "CUDA flat KA layout (host only)" begin
+            include("cpu/cuda_flat.test.jl")
         end
 
         cpu("cuda_launch") && @testset "traced CUDA launch (encoding, no GPU)" begin

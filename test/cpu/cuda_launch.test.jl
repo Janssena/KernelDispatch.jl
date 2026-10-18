@@ -131,17 +131,28 @@ end
     @test e isa ArgumentError && occursin("not found", e.msg)
 end
 
-@testset "a KA binary is refused before any argument is converted (traced_support)" begin
-    # On a real device a KA binary's prelude holds CUDA.jl's `KernelState`, which has padding and so no byte form:
-    # converting it first would fail with that error instead of the explanation.
-    struct PaddedState; p::Ptr{Cvoid}; seed::UInt32; end
-    @test_throws Exception RXC._le_bytes(PaddedState(C_NULL, UInt32(0)))
+@testset "a flat KA binary is accepted (traced_support)" begin
+    # CUDA's KA binaries take no struct arguments (no KernelState, the context as six integers), so XLA's
+    # kernel-call handler can launch them: nothing is refused up front, and the six integers have a byte form.
     ka = KernelBinary("k.cubin"; entry="k", threadgroup=64, abi=:ka)
     plain = KernelBinary("k.cubin"; entry="k", threadgroup=64)
-    reason = KernelDispatch.traced_support(KernelDispatch.CUDABackendTag(), ka)
-    @test reason isa String && occursin("KernelAbstractions", reason)
-    @test KernelDispatch.traced_support(KernelDispatch.CUDABackendTag(), plain) === nothing
-    @test KernelDispatch.traced_support(KernelDispatch.MetalBackendTag(), ka) === nothing   # Metal launches KA binaries
     triton = KernelBinary("k.cubin"; entry="k", threadgroup=64, abi=:triton)
-    @test KernelDispatch.traced_support(KernelDispatch.CUDABackendTag(), triton) === nothing
+    for b in (ka, plain, triton), tag in (KernelDispatch.CUDABackendTag(), KernelDispatch.MetalBackendTag())
+        @test KernelDispatch.traced_support(tag, b) === nothing
+    end
+    @test RXC._le_bytes(2 * 64) == "[128,0,0,0,0,0,0,0]"
+end
+
+@testset "output_operand_aliases on a custom call" begin
+    f(x) = begin
+        y0 = Reactant.Ops.fill(0.0f0, Int64[4])
+        r, = RXC._embed_custom_call("some_target", (y0, x), [(4,)]; backend_config="cfg",
+            result_eltypes=(Float32,), output_operand_aliases=[(0, 0)])
+        r
+    end
+    x = Reactant.to_rarray(rand(Float32, 4))
+    ir = repr(Reactant.@code_hlo optimize = false f(x))
+    @test occursin("output_operand_alias", ir) && occursin("operand_index = 0", ir)
+    g(x) = only(RXC._embed_custom_call("some_target", (x,), [(4,)]; backend_config="cfg", result_eltypes=(Float32,)))
+    @test !occursin("output_operand_alias", repr(Reactant.@code_hlo optimize = false g(x)))
 end
