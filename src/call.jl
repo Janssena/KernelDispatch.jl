@@ -16,9 +16,32 @@ OutArray(::Type{T}, dims::Tuple; zero::Bool=false) where {T} = OutArray(T, dims.
 
 Base.eltype(::OutArray{T}) where {T} = T
 
-function _first_array(xs)   
-    i = findfirst(Base.Fix2(isa, AbstractArray), xs);
-    return isnothing(i) ? nothing : xs[i]
+"""
+    InOutArray(x::AbstractArray)
+
+An argument the kernel both reads and updates in place (`y += a * x`, a read-modify-write output), bound where the
+array would be. It is returned among the outputs, in [`OutArray`](@ref) order, as the UPDATED array:
+
+- **eagerly** it is `x` itself, written by the kernel (so `x` must be a dense device array, not a view or wrapper that
+  would have to be copied: that is refused);
+- **in a trace** the array is the call's operand and its result is aliased to it (`output_operand_aliases`), so the kernel
+  sees `x`'s values, and the returned array is the updated one. XLA copies `x` first if it is still used afterwards, so
+  the program stays functional: `x` itself is not changed.
+
+An [`OutArray`](@ref) starts as a fresh (zero) buffer, an `InOutArray` starts as `x`. Not supported on Metal under a trace
+(jax-mps cannot alias a result to an operand).
+"""
+struct InOutArray{A<:AbstractArray}
+    array::A
+end
+
+# The first argument that is an array (an `InOutArray` counts as its array): it decides the backend.
+function _first_array(xs)
+    for x in xs
+        x isa AbstractArray && return x
+        x isa InOutArray && return x.array
+    end
+    return nothing
 end
 
 """
@@ -48,7 +71,8 @@ end
 
 Launch binary `name` of the variant for `key`, binding `(args..., extras(op, kernel, binary)...)`
 IN THE ORDER GIVEN: an [`OutArray`](@ref) is allocated (or a traced result), an array is bound in place,
-a number by value, a `Val` not at all. Returns the outputs, in `OutArray` order. Getting the order
+an [`InOutArray`](@ref) is an array the kernel updates (returned too), a number by value, a `Val` not at all. Returns the
+outputs, in the order of the `OutArray`s and `InOutArray`s. Getting the order
 right is the caller's job.
 
 It launches `cld.(extent, tile)` threadgroups: the problem size `extent` (an integer or a tuple of up to
@@ -147,7 +171,7 @@ function prepare_launch(b::KernelBinary, args...;
     be isa GPUBackend && check_binary(be, b)
     groups = cld.(_pad3(extent), b.tile)
     prelude, grid = _prelude_and_grid(be, b, groups)
-    _make_dense = Base.Fix1(device_dense, be)
+    _make_dense = Base.Fix1(_dense_arg, be)
 
     return Launch(
         b, 
@@ -155,6 +179,17 @@ function prepare_launch(b::KernelBinary, args...;
         map(_make_dense, extras), 
         prelude, groups, grid, label
     )
+end
+
+# An argument as it will be bound: device wrappers densified. An `InOutArray` is written by the kernel, so its array must
+# BE the dense one: a copy would take the update and lose it.
+_dense_arg(be, x) = device_dense(be, x)
+function _dense_arg(be, x::InOutArray)
+    y = device_dense(be, x.array)
+    y === x.array || throw(ArgumentError(
+        "an `InOutArray` argument must be a dense array the kernel can write in place, not a $(typeof(x.array)) " *
+        "(which would be copied first, losing the update): pass `parent(x)` or `collect` it into an array"))
+    return x
 end
 
 # What `b` takes ahead of its arguments, and the grid it is dispatched on, for `groups` threadgroups, by its
@@ -198,12 +233,12 @@ execute(proto, ::Launch) = throw(ArgumentError(
     bind_slots(proto, prelude, args, extras) -> (bound, slots)
 
 The one binding rule, shared by every eager launch ([`execute`](@ref), [`time_binary`](@ref)):
-each [`OutArray`](@ref) of `args` is allocated like `proto` (zero-filled if it asks), giving `bound`;
-`slots` are `(prelude..., bound..., extras...)` in order, a `Val` taking no slot.
+each [`OutArray`](@ref) of `args` is allocated like `proto` (zero-filled if it asks) and each [`InOutArray`](@ref) is
+its array, giving `bound`; `slots` are `(prelude..., bound..., extras...)` in order, a `Val` taking no slot.
 """
 function bind_slots(proto, prelude, args::Tuple, extras::Tuple)
     bound = map(args) do a
-        return a isa OutArray ? _alloc_out(proto, a) : a
+        return a isa OutArray ? _alloc_out(proto, a) : a isa InOutArray ? a.array : a
     end
     
     slots = Any[prelude...]
@@ -335,7 +370,7 @@ const _RECORD = Ref{Union{Nothing,Vector{Any}}}(nothing)
 
 Run `f()` with every eager launch replaced by a record of what it would bind: the launch's `label`
 (the name `call_binary` was given), its `slots` in order, each `kind => value` with `kind` one of
-`:bytes` (the KA prelude), `:out` (an allocated output), `:in` (an array), `:scalar`, and the
+`:bytes` (the KA prelude), `:out` (an allocated output), `:inout` (an array updated in place), `:in` (an array), `:scalar`, and the
 threadgroups it would launch, `groups` (`cld.(extent, tile)`, before any flattening by
 [`ka_grid`](@ref)), and the [`Launch`](@ref) itself, which can be run or timed later
 ([`execute`](@ref), [`time_binary`](@ref)) to replay what `f` launches. Nothing is dispatched. A record
@@ -358,8 +393,8 @@ recording() = _RECORD[] !== nothing
 record!(l::Launch, slots) = 
     push!(_RECORD[], (; label=l.label, slots=Tuple(slots), groups=l.groups, launch=l))
 
-# The allocated outputs, picked out of the bound arguments in `OutArray` order. Recursive over the tuple,
-# so the result type is inferred.
+# The allocated outputs (and updated `InOutArray`s), picked out of the bound arguments in argument order. Recursive over the
+# tuple, so the result type is inferred.
 _pick_outs(::Tuple{}, ::Tuple{}) = ()
-_pick_outs(a::Tuple, b::Tuple) = first(a) isa OutArray ?
+_pick_outs(a::Tuple, b::Tuple) = first(a) isa Union{OutArray,InOutArray} ?
     (first(b), _pick_outs(Base.tail(a), Base.tail(b))...) : _pick_outs(Base.tail(a), Base.tail(b))

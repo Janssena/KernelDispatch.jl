@@ -128,7 +128,7 @@ end
 """
     execute(proto::CuArray, l::Launch) -> Tuple
 
-Allocate every `OutArray` of the launch's arguments, bind `(prelude..., args..., extras...)` in order
+Allocate every `OutArray` of the launch's arguments (an `InOutArray` is bound as its array), bind `(prelude..., args..., extras...)` in order
 (a `Val` takes no slot), launch, and return the allocated outputs. On `CuArray` rather than
 `AbstractArray`, so that it coexists with the other backends' methods.
 """
@@ -136,7 +136,7 @@ function KD.execute(proto::CuArray, l::KD.Launch)
     bound, slots = KD.bind_slots(proto, l.prelude, l.args, l.extras)
     if KD.recording()
         KD.record!(l, Any[(:bytes => p for p in l.prelude)...,
-            (a isa KD.OutArray ? (:out => b) : b isa AbstractArray ? (:in => b) : (:scalar => b)
+            (a isa KD.OutArray ? (:out => b) : a isa KD.InOutArray ? (:inout => b) : b isa AbstractArray ? (:in => b) : (:scalar => b)
              for (a, b) in zip((l.args..., l.extras...), (bound..., l.extras...)) if !(b isa Val))...])
     else
         KD.encode_launch(KD.CUDABackendTag(), l.binary, slots, l.grid)

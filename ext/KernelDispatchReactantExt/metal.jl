@@ -17,6 +17,10 @@ function _metal_kernel_lib(name, libpath, operands, result_shapes, layout; grid,
         threadgroup=1024, reverse=nothing, active_operands=nothing, shared_mem::Integer=0,
         result_eltypes=ntuple(Returns(Float32), length(result_shapes))
 )
+    any(e -> first(e) === :inout, layout) && throw(ArgumentError(
+        "an `InOutArray` argument cannot be traced on Metal: jax-mps' kernel call cannot alias a result to an operand " *
+        "(it starts every output from zeros or leaves it uninitialised); pass the array as an input and the " *
+        "updated one as an `OutArray`, with the kernel copying the old values"))
     slots = map(enumerate(layout)) do (i, entry)
         kind, val = entry
         s = i - 1

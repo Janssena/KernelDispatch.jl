@@ -20,7 +20,7 @@ include("call.jl")
 include("ka.jl")
 include("triton.jl")
 
-export AbstractKernelOp, AbstractKernel, KernelBinary, OutArray
+export AbstractKernelOp, AbstractKernel, KernelBinary, OutArray, InOutArray
 export register_kernel!, add_variant!, use_kernel!, current_kernel, list_kernels
 export reset_kernel!, set_default_kernel!, clear_default_kernel!, selected_kernel
 export call_binary, run_binary, prepare_launch, time_binary, ka_compile, triton_binary, backend_of

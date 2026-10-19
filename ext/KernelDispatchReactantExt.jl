@@ -60,7 +60,8 @@ _rev(x) = _mat(permutedims(x, ntuple(i -> ndims(x) - i + 1, ndims(x))))
 The traced binder: one `KD.custom_call` (dispatched on the compiling client's backend; on Metal,
 `mps.metal_kernel_lib`). Its buffer table follows
 `(prelude..., args..., extras...)` in order: a bits value (the prelude, a scalar) is a `bytes` slot, an array an
-operand, an `OutArray` a result (`zero` ones zero-filled by jax-mps), a `Val` nothing. Arrays cross
+operand, an `OutArray` a result (`zero` ones zero-filled by jax-mps), an `InOutArray` an operand with a result aliased to it,
+a `Val` nothing. Arrays cross
 through `_rev`.
 """
 function KD.execute(::AnyTracedRArray, l::KD.Launch)
@@ -76,6 +77,13 @@ function KD.execute(::AnyTracedRArray, l::KD.Launch)
             push!(layout, (a.zero ? :out_zero : :out, length(shapes)))
             push!(shapes, Base.reverse(a.dims))
             push!(eltypes, eltype(a))
+        elseif a isa KD.InOutArray
+            # An array the kernel updates: the operand, and a result aliased to it (the updated array).
+            x = _rev(_mat(a.array))
+            push!(layout, (:inout, (length(operands), length(shapes))))
+            push!(operands, x)
+            push!(shapes, size(x))
+            push!(eltypes, eltype(a.array))
         elseif a isa AbstractArray
             push!(layout, (:in, length(operands)))
             push!(operands, _rev(_mat(a)))

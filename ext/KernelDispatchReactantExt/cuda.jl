@@ -147,7 +147,8 @@ _payload_bytes(payload::AbstractString) =
 
 # The kernel's parameters in order, the operands the handler is given (inputs as they are, each output as a
 # zero-filled array in its own position) and which result aliases which operand (0-based, as `_embed_custom_call`
-# takes them). The result is always a fresh buffer of zeros before the kernel runs, `OutArray(...; zero=true)` or not.
+# takes them). An output (`OutArray`) is always a fresh buffer of zeros before the kernel runs, `zero=true` or not; an
+# `InOutArray` is its operand itself, with the result aliased to it, so the kernel starts from the array's values.
 function _cuda_launch_operands(layout, operands, result_shapes, result_eltypes)
     params = Tuple{Symbol,Any}[]
     buffers = Any[]
@@ -158,6 +159,11 @@ function _cuda_launch_operands(layout, operands, result_shapes, result_eltypes)
         elseif kind === :in
             push!(params, (:array, 0))
             push!(buffers, operands[val+1])
+        elseif kind === :inout                     # val = (operand index, result index): the operand itself, updated
+            op, res = val
+            push!(params, (:array, 0))
+            push!(aliases, (res, length(buffers)))
+            push!(buffers, operands[op+1])
         else                                       # :out or :out_zero
             push!(params, (:array, 0))
             push!(aliases, (val, length(buffers)))
