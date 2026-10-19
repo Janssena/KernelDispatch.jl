@@ -12,6 +12,7 @@
 using Test, KernelDispatch, TOML
 const KT = KernelDispatch
 isdefined(@__MODULE__, :TRITON_KERNELS) || include(joinpath(@__DIR__, "..", "triton_fixtures.jl"))
+isdefined(@__MODULE__, :TRIFAST_FIXTURES) || include(joinpath(@__DIR__, "..", "trifast_fixtures.jl"))
 
 struct TritonOp <: AbstractKernelOp end
 struct TritonK <: AbstractKernel end
@@ -136,5 +137,30 @@ else
         delete!(only(only(raw["variant"])["binary"]), "shared_mem")
         open(io -> TOML.print(io, raw), path, "w")
         @test KT.load_manifest(TritonOp(), TritonK())[(:f32,)][:fwd].shared_mem == 0
+    end
+end
+
+# --- trifast's kernels (test/fixtures/trifast/): the described call against the compiled kernels -------------------
+
+if !have_trifast_fixtures()
+    @warn "no trifast fixtures in $TRIFAST_FIXTURES (run test/fixtures/make_trifast_fixture.py on an NVIDIA machine): " *
+          "skipping them"
+else
+    case = trifast_case()
+    @testset "trifast: $(inst["name"])" for inst in case["instances"]
+        b = triton_binary(trifast_json(inst))
+        kinds = ptx_param_kinds(read(trifast_image(inst, :ptx), String))
+        want = [a["kind"] == "i32" ? :u32 : a["kind"] == "f32" ? :f32 : :ptr for a in inst["args"]]
+        # What the script recorded is what the compiled kernel declares, then the hidden pointers.
+        @test kinds[1:length(want)] == want
+        @test length(kinds) == length(want) + KT.trailing_pointers(b)
+        @test b.shared_mem == inst["shared"] && b.threadgroup == 32 * inst["num_warps"] && b.abi === :triton
+        plan = trifast_plan(case, inst)
+        @test length(plan.args) == length(want) && length(plan.grid) == 3
+        # Every array the call names exists with the shape the files say.
+        for (code, name, _, dims) in plan.args
+            code == 1 && @test size(trifast_data(case, name)) == Tuple(reverse(Int.(case["tensors"][name]["shape"])))
+            code == 2 && @test !isempty(dims)
+        end
     end
 end

@@ -16,6 +16,25 @@ isdefined(@__MODULE__, :sdpa_binary_args) || include(joinpath(@__DIR__, "..", "s
     @test @inferred(eltype(OutArray(Float16, 4))) === Float16
 end
 
+@testset "InOutArray" begin
+    # An array the kernel updates: bound as the array itself, returned with the outputs, in argument order.
+    x, y = rand(Float32, 8), rand(Float32, 8)
+    args = (OutArray(Float32, 8), InOutArray(y), x, 2.0f0)
+    bound, slots = KOI.bind_slots(x, Any[], args, ())
+    @test bound[2] === y && length(slots) == 4 && slots[2] === y
+    outs = KOI._pick_outs(args, bound)
+    @test length(outs) == 2 && outs[2] === y && outs[1] isa Vector{Float32}
+    @test (@inferred KOI._pick_outs(args, bound)) isa Tuple{Vector{Float32},Vector{Float32}}
+    # It counts as an array: it picks the backend, and a launch with only an InOutArray array has one.
+    @test KOI._first_array((2.0f0, InOutArray(y))) === y
+    @test KOI._first_array((2.0f0, Val(1))) === nothing
+    b = KernelBinary("unused.metallib"; threadgroup=64)
+    l = KOI.prepare_launch(b, InOutArray(y), 2.0f0; extent=8)
+    @test l.args[1] isa InOutArray && l.args[1].array === y
+    # A wrapper that would be copied (and the update lost) is refused where the backend densifies; the host never does.
+    @test KOI._dense_arg(KOI.CPUBackend(), InOutArray(y)).array === y
+end
+
 @testset "routing on host arrays" begin
     x = rand(Float32, 4, 6)
     @test @inferred(KOI.backend_of(x)) isa KOI.CPUBackend

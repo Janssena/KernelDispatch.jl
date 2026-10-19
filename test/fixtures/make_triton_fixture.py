@@ -20,6 +20,8 @@ printed report back when something looks off. The kernels are small on purpose:
   scale_kernel      y = a * x            inputs before the output; constexpr BLOCK is dropped from the signature
   block_sum_kernel  out[pid] = sum(...)  a cross-warp reduction: uses shared memory (metadata `shared` > 0)
   strided_axpy      out = a*x + y        OUTPUT FIRST, strides after every pointer, one stride equal to 1 (specialised away)
+  accumulate_kernel y += a*x             READS its output before updating it (needs the output's old values)
+  atomic_sum_kernel out[0] += sum(block) every program atomically adds into ONE zero-initialised slot
 """
 import glob
 import json
@@ -70,6 +72,24 @@ def strided_axpy(out_ptr, stride_o, x_ptr, stride_x, y_ptr, stride_y, a, n, BLOC
     x = tl.load(x_ptr + i * stride_x, mask=m)
     y = tl.load(y_ptr + i * stride_y, mask=m)
     tl.store(out_ptr + i * stride_o, a * x + y, mask=m)
+
+
+@triton.jit
+def accumulate_kernel(y_ptr, x_ptr, a, n, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    m = offs < n
+    y = tl.load(y_ptr + offs, mask=m)
+    x = tl.load(x_ptr + offs, mask=m)
+    tl.store(y_ptr + offs, y + a * x, mask=m)
+
+
+@triton.jit
+def atomic_sum_kernel(x_ptr, out_ptr, n, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    x = tl.load(x_ptr + offs, mask=offs < n, other=0.0)
+    tl.atomic_add(out_ptr, tl.sum(x, axis=0))
 
 
 def save(directory, **arrays):
@@ -162,6 +182,35 @@ def main():
                                       python_args="out_ptr, stride_o=3, x_ptr, stride_x=1, y_ptr, stride_y=2, a=3.0, n=50 (BLOCK=32 constexpr)",
                                       scalars=dict(a=a, n=n, stride_o=so, stride_x=sx, stride_y=sy)))
     save(os.path.join(OUT, "strided_axpy"), x=x, y=y, expected=expected)
+    report.append(info)
+
+    # --- accumulate_kernel: the output is also an input (y += a*x) ----------------------------------------------
+    n, a, block = 100, 0.5, 64
+    x = rng.standard_normal(n).astype(np.float32)
+    y0 = rng.standard_normal(n).astype(np.float32)
+    xt, yt = torch.from_numpy(x).to(dev), torch.from_numpy(y0).to(dev)
+    grid = (triton.cdiv(n, block),)
+    accumulate_kernel[grid](yt, xt, a, n, BLOCK=block, num_warps=2)
+    torch.cuda.synchronize()
+    expected = yt.cpu().numpy()
+    assert np.allclose(expected, y0 + a * x, rtol=1e-6), "accumulate_kernel disagrees with the host formula"
+    info = collect(accumulate_kernel, dict(grid=list(grid), num_warps=2, python_args="y_ptr (in/out), x_ptr, a=0.5, n=100 (BLOCK=64 constexpr)",
+                                           scalars=dict(a=a, n=n)))
+    save(os.path.join(OUT, "accumulate_kernel"), x=x, y_init=y0, expected=expected)
+    report.append(info)
+
+    # --- atomic_sum_kernel: many programs atomically add into out[0] (which starts at zero) --------------------
+    n, block = 1000, 128
+    x = rng.standard_normal(n).astype(np.float32)
+    nblocks = triton.cdiv(n, block)
+    xt, ot = torch.from_numpy(x).to(dev), torch.zeros(1, device=dev)
+    atomic_sum_kernel[(nblocks,)](xt, ot, n, BLOCK=block, num_warps=4)
+    torch.cuda.synchronize()
+    expected = ot.cpu().numpy()
+    assert np.allclose(expected, x.sum(dtype=np.float64), rtol=1e-4, atol=1e-4), "atomic_sum_kernel disagrees with the host sum"
+    info = collect(atomic_sum_kernel, dict(grid=[nblocks], num_warps=4, python_args="x_ptr, out_ptr (atomic), n=1000 (BLOCK=128 constexpr)",
+                                           scalars=dict(n=n)))
+    save(os.path.join(OUT, "atomic_sum_kernel"), x=x, expected=expected)
     report.append(info)
 
     with open(os.path.join(OUT, "manifest.json"), "w") as f:

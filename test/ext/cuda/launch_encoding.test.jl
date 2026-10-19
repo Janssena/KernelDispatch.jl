@@ -113,6 +113,11 @@ end
     # two outputs, interleaved with two inputs: each result aliases the operand at its own position
     @test capture([(:in, 0), (:out, 1), (:in, 1), (:out, 0)], ((4,), (3, 2)), (Float32, Float32), x, w) ==
         (; kinds=[:array, :array, :array, :array], nbuf=4, aliases=[(1, 1), (0, 3)])
+    # an InOutArray (:inout, (operand, result)): the operand itself is the buffer, its result aliased to it, no zero buffer
+    @test capture([(:inout, (0, 0)), (:in, 1), (:bytes, "[0,0,0,64]")], ((4,),), (Float32,), x, w) ==
+        (; kinds=[:array, :array, :scalar], nbuf=2, aliases=[(0, 0)])
+    @test capture([(:in, 1), (:out, 1), (:inout, (0, 0))], ((4,), (3, 2)), (Float32, Float32), x, w) ==
+        (; kinds=[:array, :array, :array], nbuf=3, aliases=[(1, 1), (0, 2)])
 end
 
 @testset "custom_call(::CUDABackendTag) emission" begin

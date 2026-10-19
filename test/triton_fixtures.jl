@@ -31,9 +31,19 @@ end
 
 # `args`: the parameters the compiled kernel declares of its own (before the hidden trailing pointers), as the PTX
 # shows them. `num_warps`: how it was launched.
-const TRITON_KERNELS = [
+const ALL_TRITON_KERNELS = [
     (name="scale_kernel", args=[:ptr, :ptr, :f32, :u32], num_warps=2),                  # x, y, a, n   (BLOCK dropped)
     (name="block_sum_kernel", args=[:ptr, :ptr, :u32], num_warps=4),                    # x, out, n    (BLOCK dropped)
     # out, stride_o, x, [stride_x == 1: dropped], y, stride_y, a, n   (BLOCK dropped)
     (name="strided_axpy", args=[:ptr, :u32, :ptr, :ptr, :u32, :f32, :u32], num_warps=1),
+    (name="accumulate_kernel", args=[:ptr, :ptr, :f32, :u32], num_warps=2),             # y (in/out), x, a, n
+    (name="atomic_sum_kernel", args=[:ptr, :ptr, :u32], num_warps=4),                   # x, out (atomic), n
 ]
+# Only the kernels whose directory exists: fixtures generated before a kernel was added lack it.
+const TRITON_KERNELS = filter(k -> isdir(joinpath(TRITON_FIXTURES, k.name)), ALL_TRITON_KERNELS)
+
+# One binary from plain values: built INSIDE a traced function (a captured `KernelBinary` is not traceable).
+triton_mkbin(s) = KernelBinary(s.file; entry=s.entry, threadgroup=s.threadgroup, tile=1, abi=:triton, target=s.target,
+    shared_mem=s.shared, params=(; scratch_pointers=s.nptr))
+triton_spec(b) = (; file=b.file, entry=b.entry, threadgroup=b.threadgroup, target=b.target, shared=b.shared_mem,
+    nptr=b.params.scratch_pointers)

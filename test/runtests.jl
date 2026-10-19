@@ -120,6 +120,9 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
                 @testset verbose = VERBOSE "Triton kernels, eager and traced" begin
                     include("ext/cuda/triton.test.jl")
                 end
+                @testset verbose = VERBOSE "trifast's Triton kernels, eager and traced" begin
+                    include("ext/cuda/trifast.test.jl")
+                end
             end
         end
     end
