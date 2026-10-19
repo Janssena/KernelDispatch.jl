@@ -1,8 +1,15 @@
+<p align="left">
+  <a href="https://github.com/Janssena/KernelDispatch.jl/actions/workflows/test.yml"><img src="https://github.com/Janssena/KernelDispatch.jl/actions/workflows/test.yml/badge.svg?branch=main" alt="CPU tests"></a>
+  <a href="https://janssena.github.io/KernelDispatch.jl/dev/"><img src="https://img.shields.io/badge/docs-dev-blue.svg" alt="Documentation (dev)"></a>
+  <a href="https://julialang.org"><img src="https://img.shields.io/badge/Julia-1.12%20(%E2%89%A5%201.11)-9558B2?logo=julia&logoColor=white" alt="Julia 1.12, requires 1.11 or newer"></a>
+</p>
+
 # KernelDispatch.jl
 
 <p align="center">
   <img src="assets/logo.png" alt="KernelDispatch.jl logo" width="200">
 </p>
+
 
 Simplify working with compiled kernel binaries built anywhere, directly in Julia!
 - Define an op
