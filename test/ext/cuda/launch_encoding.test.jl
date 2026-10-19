@@ -1,7 +1,7 @@
 # The traced CUDA launch, as far as it can be checked without a GPU: the protobuf KernelDispatch sends to
 # XLA's `triton_kernel_call` handler (decoded here by a small independent reader), the zlib wrapping, the
 # argument-order and size restrictions, and the shape of the emitted `stablehlo.custom_call`. That the
-# handler accepts it and launches the kernel is checked on a CUDA machine (test/ext/cuda/probe.jl, gpu/traced).
+# handler accepts it and launches the kernel is checked on a CUDA machine (test/gpu/traced.test.jl, test/ext/cuda/triton.test.jl).
 
 using Test, KernelDispatch, Reactant, Zlib_jll
 

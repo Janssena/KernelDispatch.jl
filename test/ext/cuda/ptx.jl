@@ -1,4 +1,4 @@
-# An `:explicit` CUDA kernel binary for the tests and the probe: hand-written PTX with a pointer-and-scalar
+# An `:explicit` CUDA kernel binary for the tests: hand-written PTX with a pointer-and-scalar
 # signature, assembled to a cubin with the `ptxas` that CUDA.jl ships. "Explicit" is the point: unlike a
 # KernelAbstractions kernel (CUDA.jl's `KernelState` and KA's context are struct arguments) it can be
 # launched from a trace, and unlike a Julia kernel it needs no GPUCompiler. Needs the CUDA module as `GPU_PKG`

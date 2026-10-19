@@ -91,7 +91,7 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
     end
 
     @testset "custom_call dispatches on the backend" begin
-        # A backend without a method (ROCm) says so; CUDA has one (ext/cuda/launch_encoding.test.jl).
+        # A backend without a method (ROCm) says so; CUDA has one (test/ext/cuda/launch_encoding.test.jl).
         @test_throws ArgumentError KernelDispatch.custom_call(KernelDispatch.ROCmBackendTag(),
             "_fwd", "/tmp/none.metallib", (), [(4,)], Any[]; grid=(1, 1, 1))
 

@@ -7,8 +7,8 @@
 #   - the architecture a cubin was built for (`sm_XY`), checked against the device;
 #   - a flat KA binary with its input before its output, through XLA's handler.
 #
-# (Real Triton kernels are test/ext/cuda/triton.test.jl.) If a traced case fails and the generic traced tests pass, run
-# test/ext/cuda/probe.jl: it finds which calling convention (KERNELDISPATCH_CUDA_CUSTOM_CALL) the XLA client accepts.
+# (Real Triton kernels are test/ext/cuda/triton.test.jl.) If every traced case fails, the XLA client may expect another
+# calling convention: KERNELDISPATCH_CUDA_CUSTOM_CALL=<target>@<api_version> selects it.
 
 using Test, Random, KernelDispatch, Reactant
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "..", "fixtures.jl"))

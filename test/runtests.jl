@@ -10,7 +10,7 @@
 #          skipped, not failed, when there is none. It uses only the names its adapter, test/ext/<backend>/backend.jl,
 #          provides (see gpu_backend.jl), so one test base covers every backend.
 #   ext/   specific to one backend extension, in test/ext/<backend>/ next to its adapter: the mechanisms a generic
-#          failure would not pin down (and, for CUDA, the diagnostic scripts smoke.jl and probe*.jl). Some need no device
+#          failure would not pin down (and, for CUDA, the staged diagnostic script smoke.jl). Some need no device
 #          (`custom_call`, `cuda_launch`, `cuda_flat`: they run with the CPU group), the rest need that backend's GPU.
 # `KD_TEST_GPU=none|metal|cuda` overrides the GPU backend choice.
 # `JULIA_TEST_VERBOSE=true` prints the counts of the nested testsets too, also when they pass (Julia's Test hides them;

@@ -7,7 +7,7 @@
 #     against what a `forward` binds, the refusals (made by editing the real metadata), and the manifest round trip. This
 #     half is skipped, with a warning, when the fixtures are absent.
 #
-# The launches themselves are ext/cuda/triton.test.jl (eager and traced, against Triton's own output).
+# The launches themselves are test/ext/cuda/triton.test.jl (eager and traced, against Triton's own output).
 
 using Test, KernelDispatch, TOML
 isdefined(@__MODULE__, :TRITON_KERNELS) || include(joinpath(@__DIR__, "..", "triton_fixtures.jl"))
