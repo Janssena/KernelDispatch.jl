@@ -1,33 +1,35 @@
 """
     KernelDispatch
 
-Run operations as compiled kernels — eagerly on device arrays, embedded as custom calls in a
-Reactant-compiled program, or as plain Julia on the host — with kernels switchable per op and tuned
+Run operations as compiled kernels: eagerly on device arrays, embedded as custom calls in a
+Reactant-compiled program, or as plain Julia on cpu. Kernels are switchable per op and tuned
 variants picked from the inputs. See the documentation for tutorials and the API reference.
 """
 module KernelDispatch
 
-using KernelAbstractions
-using TOML
 import Preferences
+
+using TOML
+using KernelAbstractions
 
 include("backend.jl")
 include("kernel.jl")
+include("formats.jl")
 include("preferences.jl")
 include("call.jl")
 include("ka.jl")
+include("triton.jl")
 
-export AbstractKernelOp, AbstractKernel, KernelBinary, OutArray
+export AbstractKernelOp, AbstractKernel, KernelBinary, OutArray, InOutArray
 export register_kernel!, add_variant!, use_kernel!, current_kernel, list_kernels
 export reset_kernel!, set_default_kernel!, clear_default_kernel!, selected_kernel
-export call_binary, run_binary, prepare_launch, time_binary, ka_compile, backend_of
+export call_binary, run_binary, prepare_launch, time_binary, ka_compile, triton_binary, backend_of
 
-public opname, default_kernel, @default_kernel, default_candidates, kernelname, host, forward, backward, 
+public opname, default_kernel, @default_kernel, default_candidates, kernelname, host, forward, backward,
     variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, execute,
     Launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,
-    GPUBackend, device_dense, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, cache_root, 
-    ka_binary_cache_dir, device_available, custom_call, ka_context, ka_grid, ka_backend_object, 
-    ka_state_words, device_zeros, max_threads, device_time, device_backend, bind_slots
+    GPUBackend, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, cache_root, ka_binary_cache_dir,
+    current_target, device_available, device_zeros, max_threads, device_backend
 
 """
     device_zeros(proto, T, dims...) -> array

@@ -7,7 +7,6 @@
 using Test, Random, KernelDispatch, SDPAOps, Enzyme
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))
 
-const KOM = KernelDispatch
 
 begin
     rng = Random.Xoshiro(1)
@@ -20,7 +19,7 @@ begin
             z = Residual()(xd, yd, 3.0f0)
             @test z isa DeviceArray
             @test Array(z) ≈ 3 .* x .+ y
-            dx, dy, da = KOM.backward(Residual(), ResidualKA(), (xd, yd, 3.0f0), z, DeviceArray(dz))
+            dx, dy, da = KD.backward(Residual(), ResidualKA(), (xd, yd, 3.0f0), z, DeviceArray(dz))
             @test Array(dx) ≈ 3 .* dz
             @test Array(dy) ≈ dz
             @test da === nothing
@@ -32,39 +31,39 @@ begin
         # the backend's kernel-state word(s) first. (Which slots each SDPAOps kernel binds: examples/SDPAOps/test.)
         n = 100
         q, k, v = (DeviceArray(rand(Float32, r, c)) for (r, c) in ((16, n), (16, 70), (8, 70)))
-        if GPU === :metal         # FlashAttn is a prebuilt `.metallib`
-            label, args, groups = only(KOM.record_bindings(() -> KOM.forward(SDPA(), FlashAttn(), q, k, v)))
+        for kern in prebuilt_sdpa_kernels()         # a binary shipped for this backend, if any (Metal: FlashAttn)
+            label, args, groups = only(KD.record_bindings(() -> KD.forward(SDPA(), kern, q, k, v)))
             @test label === :fwd
             @test groups == (cld(n, 64), 1, 1)
         end
-        label, args, groups = only(KOM.record_bindings(() -> KOM.forward(SDPA(), SDPAKA(), q, k, v)))
+        label, args, groups = only(KD.record_bindings(() -> KD.forward(SDPA(), SDPAKA(), q, k, v)))
         @test groups == (cld(n, 64), 1, 1)
-        state = KOM.ka_state_words(GPU_TAG)                  # the backend's hidden leading kernel argument(s)
+        state = KD.ka_state_words(GPU_TAG)                  # the backend's hidden leading kernel argument(s)
         @test collect(args[1:length(state)]) == [:bytes => w for w in state]
         @test last(args[end]) === 0.25f0 && last(args[end-1]) === Int32(8)    # scale = 1/√16, then dv
 
         # The recorded `groups` are `cld.(extent, tile)`, before the backend's KA grid.
         bin = register_logit_scale!()[:main]
         x = DeviceArray(rand(Float32, 300))
-        rec = KOM.record_bindings(() -> run_binary(bin, OutArray(Float32, 300), x, 2.0f0, Int32(300),
+        rec = KD.record_bindings(() -> run_binary(bin, OutArray(Float32, 300), x, 2.0f0, Int32(300),
             Val(LS_TG); extent=(300, 2, 3), label=:scale))
         @test only(rec).label === :scale
         @test only(rec).groups == (cld(300, LS_TG), 2, 3)
-        @test only(rec).launch isa KOM.Launch && only(rec).launch.binary === bin
+        @test only(rec).launch isa KD.Launch && only(rec).launch.binary === bin
     end
 
     @testset "run_binary and prepare_launch" begin
         bin = register_logit_scale!()[:main]
         x = randn(rng, Float32, 300)
         # An unregistered binary: no op, no kernel, no variant.
-        loose = KernelBinary(bin.file; entry=bin.entry, threadgroup=bin.threadgroup, is_ka=true)
+        loose = KernelBinary(bin.file; entry=bin.entry, threadgroup=bin.threadgroup, abi=:ka, params=bin.params)
         y = only(@inferred run_binary(loose, OutArray(Float32, 300), DeviceArray(x), 2.0f0, Int32(300),
             Val(LS_TG); extent=300))
         @test Array(y) ≈ 2.0f0 .* x
         l = prepare_launch(loose, OutArray(Float32, 300), DeviceArray(x), 2.0f0, Int32(300), Val(LS_TG);
             extent=300)
         @test l.groups == (cld(300, LS_TG), 1, 1) && l.grid == (cld(300, LS_TG), 1, 1)
-        @test Array(only(KOM.execute(l))) ≈ 2.0f0 .* x
+        @test Array(only(KD.execute(l))) ≈ 2.0f0 .* x
         @test time_binary(l) isa Float64
         @test_throws ArgumentError prepare_launch(loose, DeviceArray(x))       # no extent
     end
@@ -86,7 +85,7 @@ begin
         n = 50
         x, y, dz = randn(rng, Float32, n), randn(rng, Float32, n), randn(rng, Float32, n)
         # Through the op call, and through a direct `forward(op, kernel, ...)`: both reach the rule.
-        for f in ((x, y, a) -> Residual()(x, y, a), (x, y, a) -> KOM.forward(Residual(), ResidualKA(), x, y, a))
+        for f in ((x, y, a) -> Residual()(x, y, a), (x, y, a) -> KD.forward(Residual(), ResidualKA(), x, y, a))
             primal, gx, gy = residual_grads(f, x, y, 3.0f0, dz)
             @test primal ≈ 3 .* x .+ y
             @test gx ≈ 3 .* dz
@@ -112,8 +111,11 @@ begin
         argtypes = (Vector{Float32}, Vector{Float32}, Float32, Int32, Val{64})
         b1 = ka_compile(be, logit_scale_kernel!, argtypes; tg=64, name="scale_t64", params=(; tg=64))
         p1 = b1.file
-        @test b1 isa KernelBinary && b1.is_ka && b1.threadgroup == 64 && b1.params == (; tg=64)
+        @test b1 isa KernelBinary && b1.is_ka && b1.threadgroup == 64 && b1.params.tg == 64
+        # CUDA records the flat layout it was built with (the hook is `nothing`, and nothing recorded, elsewhere).
+        @test get(b1.params, :ka_layout, nothing) == (isnothing(KD.ka_layout(GPU_TAG)) ? nothing : String(KD.ka_layout(GPU_TAG)))
         @test b1.tile == (64, 1, 1)
+        @test b1.abi === :ka && b1.target == KD.target_id(GPU_TAG)
         @test isfile(p1) && dirname(p1) == KernelDispatch.ka_binary_cache_dir()
         # Found, not rebuilt; the registry copy is what a variant uses.
         t = mtime(p1)
@@ -158,11 +160,11 @@ begin
         tb(n; kw...) = minimum(time_binary(bin, ls_args(n)...; extent=n, kw...) for _ in 1:3)
 
         # The pipeline's own limit, at most the device's; over it, both launch paths refuse.
-        lim = KOM.max_threads(bin)
-        @test lim == KOM.max_threads(be, bin) == KOM.max_threads(bin; backend=be)
+        lim = KD.max_threads(bin)
+        @test lim == KD.max_threads(be, bin) == KD.max_threads(bin; backend=be)
         @test LS_TG <= lim <= device_max_threads()
-        big = KernelBinary(bin.file; entry=bin.entry, threadgroup=4096, is_ka=true)
-        @test_throws ArgumentError KOM.encode_launch(be, big, Any[], (1, 1, 1))
+        big = KernelBinary(bin.file; entry=bin.entry, threadgroup=4096, abi=:ka, params=bin.params)
+        @test_throws ArgumentError KD.encode_launch(be, big, Any[], (1, 1, 1))
         @test_throws ArgumentError time_binary(big, ls_args(64)...; extent=64)
         @test_throws ArgumentError time_binary(bin, ls_args(64)...; extent=64, reps=0)
         @test_throws ArgumentError time_binary(bin, OutArray(Float32, 8), randn(Float32, 8), 2.0f0,
@@ -187,7 +189,7 @@ begin
         ts = @inferred time_binary([l1, l2]; reps=2)
         @test ts isa Float64 && ts > 0
         @test time_binary([l1]) > 0 && time_binary(l1) > 0       # one launch: the single form
-        @test_throws ArgumentError time_binary(KOM.Launch[])
+        @test_throws ArgumentError time_binary(KD.Launch[])
         @test_throws ArgumentError time_binary([l1, l2]; reps=0)
         lbig = prepare_launch(big, ls_args(64)...; extent=64)
         @test_throws ArgumentError time_binary([l1, lbig])        # over a pipeline's limit

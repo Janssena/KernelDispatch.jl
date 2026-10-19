@@ -8,10 +8,22 @@
 #     KD_TEST_GPU=metal   require Metal (error if it cannot be used);  likewise `cuda`
 #
 # Include this at top level, before any testset: the package it loads has to be visible (world age) to
-# the files included afterwards. It defines `GPU` (`:metal`, `:cuda` or `nothing`) and, when there is one:
-# `GPU_PKG` (the Metal/CUDA module), `DeviceArray` (`MtlArray`/`CuArray`), `GPU_TAG` (KernelDispatch's tag
-# for it), `device_max_threads()` and `wrapped_array_type()`. The GPU test files use only these, never a
-# backend's own names.
+# the files included afterwards. It defines `GPU` (`:metal`, `:cuda` or `nothing`) and, when there is one, `GPU_PKG`
+# (the Metal/CUDA module), `GPU_TAG` (KernelDispatch's tag for it), and includes the backend's ADAPTER,
+# test/ext/<backend>/backend.jl, which defines the rest of what the generic tests in test/gpu/ need:
+#
+#     DeviceArray                the device array type (`MtlArray`/`CuArray`)
+#     device_max_threads()       the device's per-threadgroup (per-block) thread limit
+#     wrapped_array_type()       the extension's union of array wrappers that are not a plain device array
+#     explicit_binaries(dir)     `label => KernelBinary` of the `:explicit` `scale` fixture (y[i] = a * x[i]), built in `dir`
+#     foreign_binary(dir)        a binary in a format the OTHER vendors use, which this backend must refuse
+#     traced_client()            the Reactant client for traced launches, or `nothing` when the machine has none
+#     TRACED_CALL_TARGET         the custom call's name in emitted MLIR ("mps.metal_kernel_lib", "triton_kernel_call_ffi")
+#     EXPECTED_KA_STATE_WORDS    what `ka_state_words(GPU_TAG)` must be
+#     prebuilt_sdpa_kernels()    SDPAOps kernels shipped as prebuilt binaries for this backend (FlashAttn on Metal)
+#
+# The generic tests use only these names, never a backend's own. What is specific to one backend is tested in
+# test/ext/<backend>/, next to its adapter; a new backend adds a directory there with a `backend.jl`.
 
 using KernelDispatch
 
@@ -63,14 +75,5 @@ if GPU === nothing
 else
     @info "GPU backend for the GPU section" backend = GPU
     const GPU_TAG = KernelDispatch.device_backend()
-    const DeviceArray = GPU === :metal ? GPU_PKG.MtlArray : GPU_PKG.CuArray
-
-    "The backend's per-threadgroup (per-block) thread limit for the device."
-    device_max_threads() = GPU === :metal ? Int(GPU_PKG.device().maxThreadsPerThreadgroup.width) :
-        Int(GPU_PKG.attribute(GPU_PKG.device(), GPU_PKG.DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK))
-
-    "The extension's union of array wrappers (views, adjoints, ...) that are not a plain device array."
-    wrapped_array_type() = getproperty(
-        Base.get_extension(KernelDispatch, GPU === :metal ? :KernelDispatchMetalExt : :KernelDispatchCUDAExt),
-        GPU === :metal ? :WrappedMtlArray : :WrappedCuArray)
+    include(joinpath(@__DIR__, "ext", String(GPU), "backend.jl"))
 end

@@ -1,0 +1,5 @@
+triton 3.2.0
+torch 2.6.0+cu124
+python 3.11.16
+gpu NVIDIA A40 sm_86
+kernels /research/data/vanmoort_group/ajanssen/KernelDispatch.jl/../trifast/src/trifast/triton.py

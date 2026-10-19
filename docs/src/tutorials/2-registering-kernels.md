@@ -2,8 +2,9 @@
 
 A kernel is a type with a few methods, plus compiled binaries registered as its **variants**. This
 tutorial does the whole process twice for the [`SDPAOps`](https://github.com/Janssena/KernelDispatch.jl/blob/main/examples/SDPAOps/src/SDPAOps.jl) op:
-once for a prebuilt GPU binary (e.g. `.fatbin`, `.cubin`, `.metallib`, etc.), once for a KernelAbstractions kernel. 
-Both end up as the same thing; a `KernelBinary` in the registry, launched by `call_binary`.
+once for a prebuilt GPU binary (a `.metallib` on Metal, a `.cubin` or `.ptx` on CUDA), once for a KernelAbstractions
+kernel. Both end up as the same thing: a `KernelBinary` in the registry, launched by `call_binary`. The steps are the same
+on every backend; where Metal and CUDA differ, the page has a section for each.
 
 What every kernel needs:
 
@@ -19,13 +20,31 @@ What every kernel needs:
 > `variant_key` receives the arguments **as `call_binary` got them**, in the binary's order, not the
 > arguments the op was called with. Write its signature against the binary's argument list.
 
-## A. From a GPU binary (in this tutorial a `.metallib`)
+### Metal and CUDA at a glance
+
+| | Metal | CUDA |
+|:--|:--|:--|
+| prebuilt binary | `.metallib` | `.cubin` (one architecture), `.ptx` (portable, assembled by the driver) |
+| device arrays | `MtlArray` | `CuArray` |
+| a launch's arguments | each array and scalar gets a buffer index (`[[buffer(i)]]`) | an ordinary parameter list: pointers, and scalars by value |
+| unit of work | threadgroup | thread block |
+| `threadgroup` | up to the pipeline's limit | up to the function's limit (at most 1024); a multiple of 32 when traced |
+| architecture check | none (portable) | a `.cubin` records the architecture it was built for (`target = "sm_86"`) and is checked against the device |
+| hidden arguments of a KA binary | a kernel-state word and KA's context bytes | none; KA's context as six integers (a *flat* build) |
+| limit on KA kernels | none | the kernel must not be able to throw |
+| registry location | `ops/<Package>.<op>/<kernel>/` | `ops/<Package>.<op>/sm_86/<kernel>/` (a subdirectory per architecture) |
+
+## A. From a prebuilt GPU binary
 
 ### The binary and its calling convention
 
-Below is a is hand-written `spda.metal` kernel per example, but these binaries can also be obtained from 
-another toolchain such as Triton by directly compiling triton code to file. Built with 
-`xcrun -sdk macosx metal sdpa.metal -o sdpa.metallib`, its entry point is:
+The binary can come from any toolchain: a hand-written kernel, Triton (see [tutorial 4](4-triton-kernels.md)), `nvcc`.
+`SDPAOps` ships one, a hand-written Metal kernel. The CUDA version below is the same kernel in CUDA C for comparison; the
+package does not ship it, and it has not been compiled for this tutorial.
+
+#### Metal
+
+`sdpa.metal` is built with `xcrun -sdk macosx metal sdpa.metal -o sdpa.metallib`. Its entry point is:
 
 ```metal
 kernel void sdpa_fwd(
@@ -53,6 +72,37 @@ What KernelDispatch does with a binary like this:
   [How many threadgroups](#how-many-threadgroups)), so the kernel computes its position from
   `threadgroup_position_in_grid` and `thread_position_in_threadgroup`.
 - Arrays follow Julia conventions: column-major, so column `i` of a `d×n` matrix starts at `i * d`.
+
+#### CUDA
+
+`nvcc -cubin -arch=sm_86 sdpa.cu -o sdpa.cubin` builds machine code for one architecture; `nvcc -ptx sdpa.cu -o sdpa.ptx`
+builds portable text the driver compiles when the module loads. `extern "C"` keeps the entry name exact, so that
+`entry="sdpa_fwd"` finds it:
+
+```cuda
+extern "C" __global__ void sdpa_fwd(
+    const float* q, const float* k, const float* v, float* o,
+    int n, int m, int d, int dv, float scale)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;      // this thread's query
+    if (i >= n) return;
+    // … the body of sdpa.metal: q[i*d + t], k[j*d + t], v[j*dv + c], o[i*dv + c]
+}
+```
+
+What KernelDispatch does with a binary like this:
+
+- It passes the arguments **in the order you give them** as the kernel's parameters: an array as a device pointer, a
+  scalar by value, with exactly the parameter's type (`Int32` for `int`, `Float32` for `float`). Under Reactant,
+  scalars must be 1, 4 or 8 bytes.
+- It launches thread blocks of `threadgroup` threads in a grid of `groups` blocks (one-dimensional blocks), so the kernel
+  computes its position from `blockIdx`, `threadIdx` and `blockDim`.
+- Arrays follow Julia conventions: column-major, as on Metal.
+- Dynamic shared memory is a property of the binary (`KernelBinary`'s `shared_mem`), not of the call.
+
+Eager CUDA launches synchronize before returning.
+
+#### Both
 
 Nothing checks the argument list of `call_binary` against the actual binary. A wrong order or a wrong 
 scalar type (`Int64` for an `int`) binds without error and computes garbage. Pin it with `record_bindings`
@@ -83,7 +133,9 @@ variant_key(::SDPA, ::FlashAttn, q, k, v, o, n, m, d, dv, scale) = (
 ```
 
 - `OutArray(Float32, dv, n)` marks an output. `call_binary` allocates it (or declares it a result in a
-  trace) and returns the outputs in `OutArray` order, hence `only(result)`.
+  trace) and returns the outputs in `OutArray` order, hence `only(result)`. An array the kernel also *reads* before
+  updating it (`y += a * x`) is passed as `InOutArray(y)` instead: it is returned with the outputs, and in a trace the
+  launch starts from its values rather than from zeros.
 - `realtype` makes the key the same for a traced array under Reactant, whose element type is a
   `TracedRNumber{Float32}`.
 - `extent=n` is the problem size: one item per query. The binary decides how many items one
@@ -98,19 +150,31 @@ A `KernelBinary` describes one compiled launch:
 KernelBinary(path; entry="sdpa_fwd", threadgroup=64, tile=(64, 1, 1), params=(;))
 ```
 
+The same call, for each backend's file:
+
+```julia
+KernelBinary("sdpa.metallib"; entry="sdpa_fwd", threadgroup=64)                 # Metal
+KernelBinary("sdpa_sm86.cubin"; entry="sdpa_fwd", threadgroup=64, target="sm_86")  # CUDA, built for sm_86
+KernelBinary("sdpa.ptx"; entry="sdpa_fwd", threadgroup=64)                      # CUDA, portable
+```
+
 - `entry` is the name of the kernel function inside the file, the one the runtime launches. It
   **defaults to the file name without its extension**, so a file named after its function needs none:
   `KernelBinary("_fwd.metallib"; threadgroup=1024)` launches `_fwd`. Set it only when the function is
   named otherwise, as here (`sdpa.metallib` holds `sdpa_fwd`), or when one file holds several
   functions, each registered with its own `entry`.
 - `threadgroup` is the number of threads per threadgroup.
+- `target` (CUDA cubins) is the architecture the binary was built for. A cubin with a `target` is checked against the
+  device on every launch, with an explanation instead of a driver error (same major compute capability, device minor at
+  least the cubin's); without one it is launched unchecked. PTX is portable and needs none. A file in the other backend's
+  format (a `.metallib` on CUDA) is refused with a message.
 - `tile` is how many items one threadgroup covers along each axis. The default, `(threadgroup, 1, 1)`,
   is one item per thread, as this kernel does, so it can be left out.
 - `params` holds any tuning numbers `extras` read, and is saved with the binary.
 
 ### How many threadgroups
 
-`call_binary` launches `cld.(extent, tile)` threadgroups: the call's problem size divided by what one
+(A thread block, on CUDA; this page says threadgroup for both.) `call_binary` launches `cld.(extent, tile)` threadgroups: the call's problem size divided by what one
 threadgroup of this binary covers. `extent` and `tile` are integers or tuples of up to three axes.
 The two halves live where they are known: the extent at the call, the tile with the build, so a
 retuned binary needs no change to the code that calls it.
@@ -156,8 +220,12 @@ key = [":Float32"]
     tile = [64, 1, 1]
     threadgroup = 64
     file = "fwd_14162b5b.metallib"
-    is_ka = false
+    abi = "explicit"
+    target = ""
 ```
+
+On CUDA the same binary is filed under the architecture, `ops/SDPAOps.sdpa/sm_86/flash/`, and a manifest records
+`target = "sm_86"` for a cubin.
 
 The copy is named `<launch name>_<id>.<ext>`: `fwd` from the `fwd=` keyword, and `14162b5b`, the
 first 8 hex digits of a hash of the file's contents, the variant key and the launch name. So a rebuilt
@@ -175,20 +243,31 @@ any more.
 ### Registering on first use: `build!`
 
 Rather than registering in a setup script, `SDPAOps` builds a missing variant the first time it's
-needed. `call_binary` looks the key up, then tries your `nearest`, then calls your `build!`:
+needed. `call_binary` looks the key up, then tries your `nearest`, then calls your `build!`. A kernel with a binary per
+backend picks the file from the loaded backend:
 
 ```julia
 const METALLIB = joinpath(@__DIR__, "..", "kernels", "sdpa.metallib")   # src/../kernels
+const CUBIN = joinpath(@__DIR__, "..", "kernels", "sdpa_sm86.cubin")    # hypothetical: SDPAOps ships no CUDA binary
 include_dependency(METALLIB)        # a new binary re-precompiles the package, and so its tag
+include_dependency(CUBIN)
 
-source_tag(::FlashAttn) = string(hash(read(METALLIB)); base=36)
+source_tag(::FlashAttn) = string(hash(read(METALLIB), hash(read(CUBIN))); base=36)
 
 function build!(op::SDPA, kern::FlashAttn, key::Tuple)
-    key == (:Float32,) || return nothing                # the binary is Float32 only
-    add_variant!(op, kern, key; fwd=KernelBinary(METALLIB; entry="sdpa_fwd", threadgroup=64))
-    return nothing
+    key == (:Float32,) || return nothing                # the binaries are Float32 only
+    be = KernelDispatch.device_backend()
+    if be isa KernelDispatch.MetalBackendTag
+        add_variant!(op, kern, key; fwd=KernelBinary(METALLIB; entry="sdpa_fwd", threadgroup=64))
+    elseif be isa KernelDispatch.CUDABackendTag
+        add_variant!(op, kern, key; fwd=KernelBinary(CUBIN; entry="sdpa_fwd", threadgroup=64, target="sm_86"))
+    end
+    return nothing        # another backend: no binary, so the call throws, naming the key
 end
 ```
+
+The package's actual `build!` registers the `.metallib` on Metal and nothing elsewhere, which is why `FlashAttn` is
+Metal-only there ([tutorial 1](1-switching-kernels.md)).
 
 `source_tag` makes a stale registry harmless: a manifest saved under another tag is ignored, so a new
 binary is registered afresh instead of the old one being reused. If `build!` doesn't create the
@@ -261,27 +340,47 @@ argtypes = (
   Int32, Int32, Int32, Int32, Float32, Val{64}                          # d, n, m, dv, scale, TG
 )
 
-fwd = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes;
+fwd = ka_compile(KernelDispatch.device_backend(), sdpa_ka!, argtypes;
   tg=64, name="sdpa_fwd_$(source_tag(SDPAKA()))", params=(; tg=64)
 )
 ```
 
+`device_backend()` is the loaded GPU backend; pass `KernelDispatch.MetalBackendTag()` or `KernelDispatch.CUDABackendTag()`
+to build for one explicitly. The kernel and its `argtypes` are the same for both.
+
 - `argtypes` are the kernel's arguments after KernelAbstractions's own launch context, in order: 
   `Vector{T}` for a buffer, the bits type for a scalar, `Val{x}` for a compile-time value. For a 
   buffer only the element type `T` matters: the kernel is compiled for a raw device pointer to `T`, 
-  not for an array, so `Vector{Float32}`, `MtlVector{Float32}` or any other `AbstractArray{Float32}` 
-  give the same binary. Whatever device array the call passes (an `MtlArray`, a traced array) is 
+  not for an array, so `Vector{Float32}`, `MtlVector{Float32}`, `CuVector{Float32}` or any other `AbstractArray{Float32}`
+  give the same binary. Whatever device array the call passes (an `MtlArray`, a `CuArray`, a traced array) is
   bound as that pointer.
 - `tg` is the workgroup size the binary is compiled for. `name` is the binary's file name and entry
   point. A file already built under that name is reused, so put a source hash in it.
-- The result is a `KernelBinary` with **`is_ka = true`**. That flag tells `call_binary` to pass the two
-  hidden leading arguments every KA-compiled binary takes, the backend's state word and KA's launch
-  context, and to dispatch the grid flat. A KA kernel compiled by other means would bind wrongly
-  without error, so compile KA kernels with `ka_compile`.
+- The result is a `KernelBinary` with **`abi = :ka`**. That tells `call_binary` to pass what every
+  KA-compiled binary takes ahead of its arguments, in the form the backend gives it (on Metal the backend's
+  state word and KA's launch context; on CUDA KA's context as six integers and no state), and to
+  dispatch the grid flat. A KA kernel compiled by other means would bind wrongly without error, so
+  compile KA kernels with `ka_compile`.
 - Its `tile` is `(tg, 1, 1)`, one item per thread, as `sdpa_ka!` indexes (`i` from the group and
   lane). A kernel whose threads each cover several items passes `tile=` to `ka_compile`.
-- It is built in `ka_binary_cache_dir()` (`~/.cache/KernelDispatch/ka`) and copied into the registry by
-  `add_variant!`.
+- It is built in `ka_binary_cache_dir()` (`~/.cache/KernelDispatch/ka`, in a subdirectory named for the
+  device architecture, such as `sm_86`, where there is one) and copied into the registry by `add_variant!`.
+
+#### What differs between Metal and CUDA
+
+- **Metal** binaries are `.metallib` files. The launch passes a kernel-state word and KA's launch context (as bytes)
+  ahead of the arguments.
+- **CUDA** binaries are `.cubin` files, built for the device's architecture (`sm_86`, in a per-architecture cache
+  directory). They are built *flat*: no CUDA.jl kernel state, and KA's context as six plain integers, so that the same
+  file launches eagerly and from a Reactant trace. The kernel is also wrapped so that XLA's handler, which passes only
+  pointers and 1-, 4- or 8-byte scalars, can launch it. A binary built before this layout existed is refused, with a
+  message to rebuild it.
+
+!!! warning "On CUDA, the kernel must not be able to throw"
+    CUDA binaries are built without CUDA.jl's kernel state so that they launch from a Reactant trace as well as
+    eagerly. Code that can still throw (a bounds check, `sqrt` of a negative number, `error`) is refused by
+    `ka_compile` with the reasons listed. `sdpa_ka!` above indexes with `unsafe_load` / `unsafe_store!`, which
+    cannot. See [Backends](../backends.md#KernelAbstractions-kernels:-built-flat).
 
 ### Registering it
 
@@ -302,14 +401,14 @@ function build!(op::SDPA, kern::SDPAKA, key::Tuple)
     tg = 64
     argtypes = (Vector{Float32}, Vector{Float32}, Vector{Float32}, Vector{Float32},
         Int32, Int32, Int32, Int32, Float32, Val{tg})
-    fwd = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes;
+    fwd = ka_compile(KernelDispatch.device_backend(), sdpa_ka!, argtypes;
         tg, name="sdpa_fwd_$(source_tag(kern))", params=(; tg))
     add_variant!(op, kern, key; fwd)
     return nothing
 end
 ```
 
-Its manifest records `is_ka = true`, the tile and the tuning numbers:
+Its manifest records `abi = "ka"`, the target, the tile and the tuning numbers. On Metal:
 
 ```toml
     [[variant.binary]]
@@ -318,10 +417,28 @@ Its manifest records `is_ka = true`, the tile and the tuning numbers:
     tile = [64, 1, 1]
     threadgroup = 64
     file = "fwd_99627d4e.metallib"
-    is_ka = true
+    abi = "ka"
+    target = ""
 
         [variant.binary.params]
         tg = 64
+```
+
+and on CUDA, a cubin for the device's architecture, with the layout it was built with:
+
+```toml
+    [[variant.binary]]
+    entry = "sdpa_fwd_37wlduvo9jvu0"
+    name = "fwd"
+    tile = [64, 1, 1]
+    threadgroup = 64
+    file = "fwd_5c1a09be.cubin"
+    abi = "ka"
+    target = "sm_86"
+
+        [variant.binary.params]
+        tg = 64
+        ka_layout = "flat"
 ```
 
 ## Checking what a binary gets
@@ -334,12 +451,15 @@ julia> label, slots, groups = only(KernelDispatch.record_bindings(() -> SDPA()(q
 julia> label => map(first, slots)          # with `:flash` selected
 :fwd => (:in, :in, :in, :out, :scalar, :scalar, :scalar, :scalar, :scalar)
 
-julia> label => map(first, slots)          # with `:ka` selected
+julia> label => map(first, slots)          # with `:ka` selected, on Metal
 :fwd => (:bytes, :bytes, :out, :in, :in, :in, :scalar, :scalar, :scalar, :scalar, :scalar)
+
+julia> label => map(first, slots)          # with `:ka` selected, on CUDA
+:fwd => (:bytes, :bytes, :bytes, :bytes, :bytes, :bytes, :out, :in, :in, :in, :scalar, :scalar, :scalar, :scalar, :scalar)
 ```
 
-The KA binary's two leading `:bytes` slots are the state word and KA's context; its `Val` takes no
-slot. Each slot's second element is the value bound, so a test can pin types and sizes too. `groups`
+The KA binary's leading `:bytes` slots are what it takes ahead of its arguments: on Metal the state word and KA's context,
+on CUDA KA's context as six integers; its `Val` takes no slot. Each slot's second element is the value bound, so a test can pin types and sizes too. `groups`
 is the number of threadgroups along each axis, `cld.(extent, tile)`: with 100 queries and a tile of 64,
 `(2, 1, 1)`. This is the cheapest guard against a mis-ordered argument list or a wrong launch size.
 
@@ -349,15 +469,15 @@ is the number of threadgroups along each axis, `cld.(extent, tile)`: with 100 qu
 binding rules. A tuner compiling candidates calls it directly, without registering each one:
 
 ```julia
-cand = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes; tg=128, name="sdpa_fwd_t128")
+cand = ka_compile(KernelDispatch.device_backend(), sdpa_ka!, argtypes; tg=128, name="sdpa_fwd_t128")
 o, = run_binary(cand, OutArray(Float32, dv, n), q, k, v, d, n, m, dv, scale; extent=n)
 ```
 
 `prepare_launch` (same arguments) returns the launch as a `KernelDispatch.Launch` without running it, so one
 prepared launch can be both checked (`KernelDispatch.execute(l)`) and timed (`time_binary(l)`).
 
-`time_binary` reports device time: `reps` dispatches back to back in one command buffer, timed by the
-device's own timestamps, so the host's launch latency is excluded. A vector of launches is timed as a
+`time_binary` reports device time: `reps` dispatches back to back (in one command buffer on Metal, between two events on
+the stream on CUDA), timed by the device's own timestamps, so the host's launch latency is excluded. A vector of launches is timed as a
 sequence, every repetition dispatching all of them in order. Together with `record_bindings`, whose
 records carry each `Launch`, that times everything one op call launches:
 

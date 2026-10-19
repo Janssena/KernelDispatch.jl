@@ -4,7 +4,6 @@
 using KernelDispatch, SDPAOps
 import KernelDispatch: variant_key, extras
 
-const KOI = KernelDispatch
 
 # Independent of `SDPAOps.host`: one query at a time, in Float64.
 function sdpa_reference(q, k, v)
@@ -26,9 +25,9 @@ const SDPA_SIZES = ((16, 100, 70, 8), (4, 1, 1, 1), (8, 64, 64, 4), (32, 129, 5,
 # `extras` of a length known only at run time: merged into the arguments, they would hide which
 # argument is an output. Bound separately, they cannot reach `call_binary`'s result.
 struct SDPADyn <: AbstractKernel end
-KOI.kernelname(::SDPADyn) = :dyn
-KOI.variant_key(op::SDPA, ::SDPADyn, args...) = variant_key(op, SDPAKA(), args...)
-KOI.extras(::SDPA, ::SDPADyn, b::KernelBinary) = Tuple(Val(b.params.tg) for _ in 1:1)
+KD.kernelname(::SDPADyn) = :dyn
+KD.variant_key(op::SDPA, ::SDPADyn, args...) = variant_key(op, SDPAKA(), args...)
+KD.extras(::SDPA, ::SDPADyn, b::KernelBinary) = Tuple(Val(b.params.tg) for _ in 1:1)
 
 
 # The binaries' argument lists, each in its own order (see SDPAOps.jl).

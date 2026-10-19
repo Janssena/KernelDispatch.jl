@@ -9,11 +9,9 @@ import Metal: AS, GPUCompiler, LinearAlgebra
 using Metal
 using KernelDispatch
 
-const KO = KernelDispatch
+const KD = KernelDispatch
 
 dptr(::Type{T}) where {T} = Core.LLVMPtr{T,AS.Device}
-
-# --- binding and dispatch -------------------------------------------------------------------------
 
 # Pipeline creation (metallib load -> MTLFunction -> pipeline state) is expensive; on the launch path
 # it put a large constant on every measurement and dominated small problems.
@@ -42,7 +40,7 @@ end
 # device's. Dispatching over it returns garbage AND a fast time, so launches refuse it.
 pipeline_limit(path, entry) = Int(pipeline(path, entry).maxTotalThreadsPerThreadgroup)
 
-KO.max_threads(::KO.MetalBackendTag, b::KO.KernelBinary) = pipeline_limit(b.file, b.entry)
+KD.max_threads(::KD.MetalBackendTag, b::KD.KernelBinary) = pipeline_limit(b.file, b.entry)
 
 function _check_limit(path, entry, tg)
     lim = pipeline_limit(path, entry)
@@ -99,38 +97,34 @@ function _run(items, reps::Int)
     return cb
 end
 
-KO.encode_launch(::KO.MetalBackendTag, b::KO.KernelBinary, slots, grid::NTuple{3,Int}) =
+KD.encode_launch(::KD.MetalBackendTag, b::KD.KernelBinary, slots, grid::NTuple{3,Int}) =
     (_run([(b, slots, grid)], 1); nothing)
 
 # The repetitions share one command buffer: its GPU timestamps exclude all host latency.
-function KO.device_time(::KO.MetalBackendTag, items::AbstractVector; reps::Int)
+function KD.device_time(::KD.MetalBackendTag, items::AbstractVector; reps::Int)
     reps >= 1 || throw(ArgumentError("`reps` must be at least 1, got $reps"))
     cb = _run(items, reps)
     return (cb.GPUEndTime - cb.GPUStartTime) / reps
 end
 
-# --- the eager executor ---------------------------------------------------------------------------
-
 """
     execute(proto::AbstractArray, l::Launch) -> Tuple
 
-Allocate every `OutArray` of the launch's arguments, bind `(prelude..., args..., extras...)` in order
+Allocate every `OutArray` of the launch's arguments (an `InOutArray` is bound as its array), bind `(prelude..., args..., extras...)` in order
 (a `Val` takes no slot), dispatch, and return the allocated outputs. Dispatches on `MtlArray`, so it
 coexists with the other backends' methods (CUDA's on `CuArray`, Reactant's on traced arrays).
 """
-function KO.execute(proto::MtlArray, l::KO.Launch)
-    bound, slots = KO.bind_slots(proto, l.prelude, l.args, l.extras)
-    if KO.recording()
-        KO.record!(l, Any[(:bytes => p for p in l.prelude)...,
-            (a isa KO.OutArray ? (:out => b) : b isa AbstractArray ? (:in => b) : (:scalar => b)
+function KD.execute(proto::MtlArray, l::KD.Launch)
+    bound, slots = KD.bind_slots(proto, l.prelude, l.args, l.extras)
+    if KD.recording()
+        KD.record!(l, Any[(:bytes => p for p in l.prelude)...,
+            (a isa KD.OutArray ? (:out => b) : a isa KD.InOutArray ? (:inout => b) : b isa AbstractArray ? (:in => b) : (:scalar => b)
              for (a, b) in zip((l.args..., l.extras...), (bound..., l.extras...)) if !(b isa Val))...])
     else
-        KO.encode_launch(KO.MetalBackendTag(), l.binary, slots, l.grid)
+        KD.encode_launch(KD.MetalBackendTag(), l.binary, slots, l.grid)
     end
-    return KO._pick_outs(l.args, bound)
+    return KD._pick_outs(l.args, bound)
 end
-
-# --- compiling -------------------------------------------------------------------------------------
 
 """
     compile_metallib(kernel, signature, tg, entry) -> Vector{UInt8}
@@ -159,18 +153,16 @@ end
 _ka_argtype(::Type{A}) where {A<:AbstractArray} = dptr(eltype(A))
 _ka_argtype(::Type{T}) where {T} = T
 
-function KO._ka_compile(::KO.MetalBackendTag, kernel, argtypes::Tuple, tg::Int, name::String,
+function KD._ka_compile(::KD.MetalBackendTag, kernel, argtypes::Tuple, tg::Int, name::String,
         dir::String)
     mkpath(dir)
     path = joinpath(dir, name * ".metallib")
     isfile(path) && return path
-    ctx, _ = KO.ka_context(KO.MetalBackendTag(), (1, 1, 1), tg)
+    ctx, _ = KD.ka_context(KD.MetalBackendTag(), (1, 1, 1), tg)
     sig = Tuple{typeof(ctx),map(_ka_argtype, argtypes)...}
     write(path, compile_metallib(kernel, sig, tg, name))
     return path
 end
-
-# --- routing --------------------------------------------------------------------------------------
 
 # Wrappers over device memory that Metal.jl leaves as a `SubArray` / `ReshapedArray` / `Adjoint` /
 # `Transpose` rather than an `MtlArray` (it returns an `MtlArray` with an offset for a contiguous
@@ -182,23 +174,23 @@ const WrappedMtlArray = Union{
     LinearAlgebra.Transpose{<:Any,<:MtlArray},
 }
 
-KO.backend_of(::MtlArray) = KO.MetalBackendTag()
-KO.backend_of(::WrappedMtlArray) = KO.MetalBackendTag()
+KD.backend_of(::MtlArray) = KD.MetalBackendTag()
+KD.backend_of(::WrappedMtlArray) = KD.MetalBackendTag()
 
 # The launcher binds a raw buffer (plus offset) and no strides, so a wrapper that is not an `MtlArray`
 # (a strided `view`, an adjoint) is copied once, on the device. Anything else is left alone: a host array among
 # the arguments should fail at binding, not be copied into another host array.
-KO.device_dense(::KO.MetalBackendTag, x::MtlArray) = x
-KO.device_dense(::KO.MetalBackendTag, x::WrappedMtlArray) = copy(x)
+KD.device_dense(::KD.MetalBackendTag, x::MtlArray) = x
+KD.device_dense(::KD.MetalBackendTag, x::WrappedMtlArray) = copy(x)
 
-KO.ka_backend_object(::KO.MetalBackendTag) = MetalBackend()
+KD.ka_backend_object(::KD.MetalBackendTag) = MetalBackend()
 
 # Metal.jl's KA kernels take a kernel-state word (a `UInt32`) ahead of KA's context.
-KO.ka_state_words(::KO.MetalBackendTag) = (UInt32(0),)
+KD.ka_state_words(::KD.MetalBackendTag) = (UInt32(0),)
 
 # KA's Metal backend reads only the x component of the threadgroup position and rebuilds the N-D
 # indices from the context, so the binary is dispatched as a flat 1-D grid.
-KO.ka_grid(::KO.MetalBackendTag, groups::NTuple{3,Int}) = (prod(groups), 1, 1)
+KD.ka_grid(::KD.MetalBackendTag, groups::NTuple{3,Int}) = (prod(groups), 1, 1)
 
 const _AVAILABLE = Ref{Union{Nothing,Bool}}(nothing)
 function available()
@@ -214,7 +206,7 @@ function available()
 end
 
 function __init__()
-    available() && push!(KO.LOADED_BACKENDS, :metal)
+    available() && push!(KD.LOADED_BACKENDS, :metal)
     return nothing
 end
 

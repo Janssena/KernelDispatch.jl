@@ -1,0 +1,38 @@
+name: CPU tests
+
+# The `cpu` group of test/runtests.jl: needs no GPU (the Triton tests run from the committed fixtures, the Reactant
+# tests on its CPU client). The `gpu` and `ext` groups need an NVIDIA or Apple GPU and are run by hand.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu:
+    name: CPU tests (${{ matrix.os }}, Julia ${{ matrix.julia }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]       # macOS arm64 runners are often capacity-limited; the CPU group needs no Apple GPU
+        julia: ['1.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.julia }}
+      - uses: julia-actions/cache@v2
+      - name: Install test dependencies
+        run: julia --project=test -e 'using Pkg; Pkg.instantiate()'
+      - name: Run the CPU tests
+        run: julia --project=test test/runtests.jl cpu
+        env:
+          JULIA_TEST_VERBOSE: 'true'

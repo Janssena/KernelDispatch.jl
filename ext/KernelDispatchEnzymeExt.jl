@@ -13,10 +13,10 @@ using KernelDispatch
 using Enzyme
 using Enzyme: EnzymeRules
 
-const KO = KernelDispatch
+const KD = KernelDispatch
 
 # Which kernel runs is a table lookup, not something to differentiate.
-EnzymeRules.inactive(::typeof(KO.selected_kernel), args...) = nothing
+EnzymeRules.inactive(::typeof(KD.selected_kernel), args...) = nothing
 
 _shadow(x::AbstractArray) = zero(x)
 _shadow(x) = nothing
@@ -24,11 +24,11 @@ _shadows(out::Tuple) = map(_shadow, out)
 _shadows(out) = _shadow(out)
 
 function EnzymeRules.augmented_primal(config::EnzymeRules.RevConfig,
-        ::Enzyme.Const{typeof(KO.forward)}, ::Type{RT},
-        op::Enzyme.Const{<:KO.AbstractKernelOp}, k::Enzyme.Const{<:KO.AbstractKernel},
+        ::Enzyme.Const{typeof(KD.forward)}, ::Type{RT},
+        op::Enzyme.Const{<:KD.AbstractKernelOp}, k::Enzyme.Const{<:KD.AbstractKernel},
         args::Vararg{Enzyme.Annotation,N}) where {RT,N}
     vals = map(a -> a.val, args)
-    out = KO.forward(op.val, k.val, vals...)
+    out = KD.forward(op.val, k.val, vals...)
     primal = EnzymeRules.needs_primal(config) ? out : nothing
     shadow = EnzymeRules.needs_shadow(config) ? _shadows(out) : nothing
     return EnzymeRules.augmented_rule_return_type(config, RT)(primal, shadow, (vals, out, shadow))
@@ -38,13 +38,13 @@ end
 # `Duplicated` argument's gradient goes into its shadow (`nothing` returned); an `Active` one is a
 # scalar parameter, which is not differentiated through a kernel (zero).
 function EnzymeRules.reverse(config::EnzymeRules.RevConfig,
-        ::Enzyme.Const{typeof(KO.forward)}, dret, tape,
-        op::Enzyme.Const{<:KO.AbstractKernelOp}, k::Enzyme.Const{<:KO.AbstractKernel},
+        ::Enzyme.Const{typeof(KD.forward)}, dret, tape,
+        op::Enzyme.Const{<:KD.AbstractKernelOp}, k::Enzyme.Const{<:KD.AbstractKernel},
         args::Vararg{Enzyme.Annotation,N}) where {N}
     vals, out, shadow = tape
     cots = dret isa Union{Tuple,AbstractArray} ? dret : shadow
-    isnothing(cots) && error("no cotangent available for op `:$(KO.opname(op.val))`")
-    grads = KO.backward(op.val, k.val, vals, out, cots)
+    isnothing(cots) && error("no cotangent available for op `:$(KD.opname(op.val))`")
+    grads = KD.backward(op.val, k.val, vals, out, cots)
     for (a, g) in zip(args, grads)
         (a isa Enzyme.Duplicated && !isnothing(g)) && (a.dval .+= g)
     end

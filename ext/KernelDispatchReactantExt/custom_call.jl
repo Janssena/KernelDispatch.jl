@@ -1,10 +1,22 @@
-_le_bytes(x) = "[" * join(Int.(reinterpret(UInt8, [x])), ",") * "]"
-
 # A string is a StringAttr (the legacy calling conventions); a dictionary is a DictionaryAttr, the form the
 # typed-FFI convention (`api_version = 4`) takes its attributes in.
 _config_attr(s::AbstractString) = Reactant.MLIR.IR.Attribute(s)
 _config_attr(d::AbstractDict) = Reactant.MLIR.IR.Attribute(d)
 _config_attr(a::Reactant.MLIR.IR.Attribute) = a
+
+# `output_operand_aliases`: pairs `(result, operand)`, both 0-based. The result then shares the operand's buffer
+# (an in-place update, or an output that is handed to the kernel as an input too); `nothing` when there are none.
+function _aliases_attr(aliases, nresults::Integer)
+    isempty(aliases) && return nothing
+    ctx = Reactant.MLIR.IR.current_context()
+    attrs = map(aliases) do (result, operand)
+        out_tup = Ref{Int64}(result)
+        Reactant.MLIR.IR.Attribute(
+            GC.@preserve ctx out_tup Reactant.MLIR.API.stablehloOutputOperandAliasGet(
+                ctx, nresults == 1 ? 0 : 1, pointer_from_objref(out_tup), operand, 0, C_NULL))
+    end
+    return Reactant.MLIR.IR.Attribute(attrs)
+end
 
 """
     _embed_custom_call(call_target_name, operands, result_shapes; backend_config,
@@ -24,6 +36,8 @@ defaults to all `Float32`. The declared type IS the buffer the runtime allocates
 what the kernel writes: a kernel storing `Float16` into a result declared `Float32` fills half the
 bytes and is read back as garbage, with no error.
 
+`output_operand_aliases` is a list of `(result, operand)` pairs (0-based) whose buffers are shared.
+
 `reverse`, given, is a VJP attached via [`_attach_reverse_rule!`](@ref) — see its docstring for the
 calling convention. `label` only affects the generated reverse function's (gensym'd) name, for
 readability in an MLIR dump; it defaults to `call_target_name` but is worth overriding when one
@@ -33,7 +47,8 @@ every kernel in a `.metallib` under that one target, for instance).
 function _embed_custom_call(call_target_name::AbstractString, operands, result_shapes;
         backend_config, api_version::Integer=1, reverse=nothing,
         active_operands=nothing, label::AbstractString=call_target_name,
-        result_eltypes=ntuple(Returns(Float32), length(result_shapes))
+        result_eltypes=ntuple(Returns(Float32), length(result_shapes)),
+        output_operand_aliases=Tuple{Int,Int}[]
 )
     length(result_eltypes) == length(result_shapes) || throw(ArgumentError(
         "$(length(result_eltypes)) result eltypes for $(length(result_shapes)) result shapes"
@@ -48,7 +63,8 @@ function _embed_custom_call(call_target_name::AbstractString, operands, result_s
         result_0=rts,
         call_target_name=Reactant.MLIR.IR.Attribute(call_target_name),
         backend_config=_config_attr(backend_config),
-        api_version=Reactant.MLIR.IR.Attribute(Int32(api_version))
+        api_version=Reactant.MLIR.IR.Attribute(Int32(api_version)),
+        output_operand_aliases=_aliases_attr(output_operand_aliases, length(result_shapes))
     )
     
     results = ntuple(length(result_shapes)) do i
@@ -61,48 +77,6 @@ function _embed_custom_call(call_target_name::AbstractString, operands, result_s
     
     return results
 end
-
-"""
-    _metal_kernel_lib(name, libpath, operands, result_shapes, layout; grid,
-        result_eltypes=all Float32) -> results
-
-[`_embed_custom_call`](@ref) targeting `"mps.metal_kernel_lib"`, jax-mps' dispatcher for a named
-kernel inside a pre-compiled `.metallib`. `layout` is the kernel's argument table in order, as
-`(:in, i)`, `(:out, i)`, `(:out_zero, i)` or `(:bytes, payload)`. `:out_zero` is an output jax-mps
-zero-fills before dispatch (`"zero_init"`), for a kernel that accumulates into it.
-
-Two things are easy to get wrong and are silent when wrong: the `backend_config` JSON must include
-`api_version = 1`, and dispatch must be by *threadgroups*, matching how the compiled kernel indexes
-by `threadgroup_position_in_grid`.
-"""
-function _metal_kernel_lib(name, libpath, operands, result_shapes, layout; grid,
-        threadgroup=1024, reverse=nothing, active_operands=nothing,
-        result_eltypes=ntuple(Returns(Float32), length(result_shapes))
-)
-    slots = map(enumerate(layout)) do (i, entry)
-        kind, val = entry
-        s = i - 1
-        kind === :bytes ? "{\"slot\":$s,\"kind\":\"bytes\",\"bytes\":$val}" :
-        kind === :out_zero ? "{\"slot\":$s,\"kind\":\"output\",\"arg\":$val,\"zero_init\":true}" :
-        "{\"slot\":$s,\"kind\":\"$(kind === :in ? "input" : "output")\",\"arg\":$val}"
-    end
-
-    cfg = "{\"name\":\"$name\",\"metallib_path\":\"$libpath\"," *
-          "\"grid\":[$(grid[1]),$(grid[2]),$(grid[3])]," *
-          "\"threadgroup\":[$(threadgroup),1,1]," *
-          "\"dispatch\":\"threadgroups\",\"buffers\":[" * join(slots, ",") * "]}"
-
-    return _embed_custom_call("mps.metal_kernel_lib", operands, result_shapes;
-        backend_config=cfg, reverse, active_operands, label=name, result_eltypes)
-end
-
-"""
-    KernelDispatch.custom_call(::MetalBackendTag, entry, path, operands, result_shapes, layout; kw...)
-
-The Metal embedding: [`_metal_kernel_lib`](@ref) (`mps.metal_kernel_lib`).
-"""
-KO.custom_call(::KO.MetalBackendTag, entry, path, operands, result_shapes, layout; is_ka=false, kw...) =
-    _metal_kernel_lib(entry, path, operands, result_shapes, layout; kw...)
 
 """
     _attach_reverse_rule!(op, name, operands, results, vjp, active_operands)
@@ -130,11 +104,6 @@ stays positional.
 Enzyme verifies this signature against the call site before it fires, so a mismatch is a compile
 error rather than a wrong gradient. That check is the reason this is safe to write by hand.
 """
-# A new wrapper around the same MLIR value. Note `eltype` of a TracedRArray is a TracedRNumber, so
-# the scalar type has to come off the type parameters rather than from `eltype`.
-_fresh(x::Reactant.TracedRArray{T,N}) where {T,N} =
-    Reactant.TracedRArray{T,N}((), x.mlir_data, size(x))
-
 function _attach_reverse_rule!(op, name, operands, results, vjp, active_operands)
     # Types are what matter for the traced signature; the values are placeholders. Each slot needs
     # its OWN wrapper object, though: the tracer keys on object identity, so passing a value twice
@@ -161,3 +130,8 @@ function _attach_reverse_rule!(op, name, operands, results, vjp, active_operands
         
     return nothing
 end
+
+# A new wrapper around the same MLIR value. Note `eltype` of a TracedRArray is a TracedRNumber, so
+# the scalar type has to come off the type parameters rather than from `eltype`.
+_fresh(x::Reactant.TracedRArray{T,N}) where {T,N} =
+    Reactant.TracedRArray{T,N}((), x.mlir_data, size(x))

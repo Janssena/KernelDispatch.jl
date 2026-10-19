@@ -1,19 +1,46 @@
 # KernelDispatch.jl
 
+<p align="center">
+  <img src="assets/logo.png" alt="KernelDispatch.jl logo" width="200">
+</p>
+
 Simplify working with compiled kernel binaries built anywhere, directly in Julia!
 - Define an op
 - Register kernels for it
 - Select default kernel and run the op on CPU and device arrays simply through multiple dispatch!
-- Kernels can even run embedded in a Reactant-compiled program as a stablehlo.custom_call!
+- Kernels can even run embedded in a Reactant-compiled program as a `stablehlo.custom_call`!
 
 An operation can have several **kernels** (implementations) you switch between at runtime, each with
 **tuned variants** picked from the inputs. Pure-Julia [KernelAbstractions](https://github.com/JuliaGPU/KernelAbstractions.jl) 
 kernels are also supported as one more source of binaries: `ka_compile` turns one into a binary, and 
 from there it is launched like any other. 
 
-**Tutorials** in [`docs/`](docs/README.md) walk through a complete example: switching kernels
-and persisting defaults, registering a compiled binary or a KA kernel, custom `forward`/`backward` with
-Enzyme gradients, and compiling a Triton kernel to a `.metallib`.
+**Documentation** (tutorials and API reference): <https://janssena.github.io/KernelDispatch.jl/dev/>. The tutorials live in [`docs/src/tutorials/`](docs/src/tutorials) and walk through a complete example: switching kernels
+and persisting defaults, registering a compiled binary or a KernelAbstractions kernel, custom `forward`/`backward` with
+Enzyme gradients, and compiling a Triton kernel to a `.metallib` or using one compiled for NVIDIA.
+
+**Backends.** 
+
+* Metal runs prebuilt `.metallib` binaries and KernelAbstractions kernels (compiled to `.metallib`). 
+
+* CUDA runs prebuilt `.cubin` / `.ptx` files, KernelAbstractions kernels (compiled to `.cubin`) and kernels compiled by 
+Triton (`triton_binary`). 
+
+* Under Reactant a binary is embedded as a `stablehlo.custom_call`: on Metal through jax-mps, on CUDA through XLA's 
+`triton_kernel_call_ffi` handler. CUDA's KernelAbstractions binaries are built without CUDA.jl's kernel state, so the same file launches 
+eagerly and from a trace; the price is that such a kernel must not be able to throw. 
+
+Note: A prebuilt `.metallib`/`.cubin`/`.ptx`/`etc.` is backend-specific, so an op that ships one (like the `FlashAttn` 
+kernel of the examples) needs a KernelAbstractions kernel to run on *any* backend (compiling to a supported binary format on-the-fly). A 
+kernel's buffers may come in any order, and a kernel that updates an array in place takes it as an [`InOutArray`](@ref).
+
+**What is tested.** Metal (eager and traced) on Apple silicon. CUDA on one NVIDIA A40 (sm_86): prebuilt, KernelAbstractions and Triton
+binaries, eager and traced, including kernels compiled by Triton 3.8.0 (small test kernels and
+[trifast](https://github.com/latkins/trifast)'s four triangle-attention kernels, checked against torch). **Everything is
+tested in Float32 only**; Float16 and BFloat16 are not tested yet. ROCm is not implemented. A Triton
+binary is compiled for the specialisation of the arguments it was first launched with (integers equal to 1 or divisible
+by 16), so a registered one serves only launches in the same class. See the documentation's *Backends* page for the
+matrix and the limits.
 
 ## Concepts
 
@@ -22,7 +49,7 @@ Enzyme gradients, and compiling a Triton kernel to a `.metallib`.
 | **op** | an operation: `SDPA <: AbstractKernelOp` | `host`, `@default_kernel` |
 | **kernel** | one implementation: `Trifast <: AbstractKernel` | `forward` (builds the binary's arguments), optionally `backward`, `variant_key`, `extras`, `nearest`, `build!`, `source_tag` |
 | **variant** | one (tuned) build of a kernel for a class of inputs: launch name → `KernelBinary` | `add_variant!` |
-| **`KernelBinary`** | one compiled launch: file, entry point, `threadgroup`, `tile`, tuning `params`, `is_ka` | — |
+| **`KernelBinary`** | one compiled launch: file, entry point, `threadgroup`, `tile`, tuning `params`, `abi`, `target`, `shared_mem` | — (`ka_compile` and `triton_binary` make them) |
 
 Ops and kernels are fieldless singletons; behaviour comes from dispatch. Which kernel is *selected* is
 a method, so an op call is type-stable.
@@ -73,9 +100,20 @@ q, k, v = (randn(Float32, 16, 100), randn(Float32, 16, 70), randn(Float32, 8, 70
 o = SDPA()(q, k, v)                                       # MtlArray: the default kernel, FlashAttn
 SDPA()(Array(q), Array(k), Array(v))                      # Array: `host` · traced (jax-mps): a custom call
 use_kernel!(SDPA(), SDPAKA())                             # this session, from the next top-level statement
-SDPA()(q, k, v)                                           # runs the KA kernel (defined below)
+SDPA()(q, k, v)                                           # runs the KernelAbstractions kernel (defined below)
 forward(SDPA(), FlashAttn(), q, k, v)                     # one call with a given kernel: no global switch
 ```
+
+On CUDA the same op has the same shape; only the binary and the array type change:
+
+```julia
+add_variant!(SDPA(), FlashAttn(); fwd = KernelBinary("flash.cubin"; entry="sdpa_fwd", threadgroup=64, target="sm_86"))
+q, k, v = (randn(Float32, 16, 100), randn(Float32, 16, 70), randn(Float32, 8, 70)) .|> CuArray
+```
+
+A `.cubin` is built for one architecture (`target`, checked against the device); a `.ptx` is portable. The `forward` is
+unchanged. A `.metallib` is Metal-only and a `.cubin` CUDA-only, which is why an op that wants to run on both either
+ships a binary for each or offers a KernelAbstractions kernel (below), which compiles for whichever backend is loaded.
 
 ## KernelAbstractions kernels
 
@@ -110,26 +148,42 @@ argtypes = (
   Int32, Int32, Int32, Int32, Float32, Val{64}
 )
 
-fwd = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes; tg=64, name="sdpa_ka_v1")
+fwd = ka_compile(KernelDispatch.device_backend(), sdpa_ka!, argtypes; tg=64, name="sdpa_ka_v1")   # Metal or CUDA, whichever is loaded
 add_variant!(SDPA(), SDPAKA(); fwd)
 use_kernel!(SDPA(), SDPAKA())
 ```
 
 - `ka_compile(backend, kernel, argtypes; tg, name, params, tile)` returns a `KernelBinary` with
-  `is_ka=true` and, unless given, `tile=(tg, 1, 1)`: one item per thread, as `sdpa_ka!` indexes. It
-  builds into `ka_binary_cache_dir()` (`<cache_root>/ka`) and finds it there next time, so put a
+  `abi=:ka` and, unless given, `tile=(tg, 1, 1)`: one item per thread, as `sdpa_ka!` indexes. It
+  builds into `ka_binary_cache_dir()` (`<cache_root>/ka`, in a subdirectory named for the GPU architecture where it matters, e.g. `sm_86`) and finds it there next time, so put a
   source hash in `name`. Its `argtypes` are the arguments after KA's context: `Vector{T}` for a
   buffer (a raw device pointer, indexed with `unsafe_load`/`unsafe_store!`), a bits type, `Val{x}`.
-- `is_ka=true` tells `call_binary` to bind KA's launch context and the backend's state word ahead of the
-  arguments, and to dispatch flat. Compile KA kernels with `ka_compile` so the binary matches. It is a
-  property of the binary, so one kernel type can hold a KA `fwd` and a Triton `bwd`.
-- A KA kernel is just another source of binaries: switching between a KA, a Metal and a Triton kernel
+- `abi=:ka` tells `call_binary` to bind what a KernelAbstractions binary takes ahead of its arguments (KA's launch context and the
+  backend's state word on Metal; KA's context as six integers and no state on CUDA), and to dispatch flat (`abi=:explicit`, the default, binds nothing extra). Compile KernelAbstractions kernels with `ka_compile` so the binary matches. It is a
+  property of the binary, so one kernel type can hold a KernelAbstractions `fwd` and a Triton `bwd`.
+- A KernelAbstractions kernel is just another source of binaries: switching between a KA, a Metal and a Triton kernel
   never changes the op. To make it a persistable default, list it in `@default_kernel` (after its type
   is defined).
-- **Not for tracing KA kernels.** Under Reactant the program only *names* the compiled file, so XLA
-  never sees the kernel's code. To have Reactant trace a KA kernel itself, run Reactant over the
+- **A traced kernel is opaque.** Under Reactant the program only *names* the compiled file (a KernelAbstractions binary
+  traces as a custom call like any other), so XLA never sees the kernel's code. To have Reactant trace a KernelAbstractions kernel itself, run Reactant over the
   `@kernel` function instead of running through KernelDispatch. The ability to optionally trace kernels is 
   planned functionality (but is currently only supported through CUDA in Reactant).
+
+## Triton kernels on CUDA
+
+A kernel compiled by Triton is one more source of binaries. Compile ahead with Triton (Python), keep the `.cubin`,
+`.ptx` and `.json` it writes, and describe them with [`triton_binary`](https://janssena.github.io/KernelDispatch.jl/dev/api/#KernelDispatch.triton_binary):
+
+```julia
+bin = triton_binary("scale_kernel.json")            # the cubin beside it; entry, num_warps, shared memory, target from the JSON
+add_variant!(op, kernel, (:Float32,); fwd=bin)      # then call_binary(op, kernel, :fwd, args...; extent=grid) as usual
+```
+
+Pass exactly the arguments the *compiled* kernel declares (Triton drops `constexpr` arguments and integers equal to 1),
+and note that a binary is only valid for launches whose integer arguments and pointers fall in the same classes
+(equal to 1, divisible by 16) as when it was compiled. A kernel that reads and updates an array takes it as
+`InOutArray(x)`. Not supported: thread-block clusters, global scratch memory, other vendors. Details in the *Backends*
+page and the tutorial.
 
 ## AD
 
@@ -138,3 +192,18 @@ use_kernel!(SDPA(), SDPAKA())
 - **Under Reactant:** call `backward` directly. A gradient traced *through* a kernel throws, because
   Enzyme-JAX cannot differentiate a custom call yet (EnzymeAD/Enzyme#2516); set
   `KernelDispatch.KERNEL_IN_TRACED_AUTODIFF[] = true` once it can.
+
+## Tests
+
+```
+julia --project=test test/runtests.jl          # everything the machine can run
+julia --project=test test/runtests.jl cpu      # no GPU package needed
+julia --project=test test/runtests.jl gpu      # generic: Metal on Apple, CUDA on NVIDIA; skipped without a device
+julia --project=test test/runtests.jl ext      # what is specific to one backend: test/ext/<backend>/
+JULIA_TEST_VERBOSE=true julia --project=test test/runtests.jl gpu   # also show the counts of passing nested testsets
+```
+
+`KD_TEST_GPU=none|metal|cuda` overrides the GPU backend choice. `test/ext/cuda/smoke.jl` is a staged check of the
+CUDA path that prints one PASS/FAIL per stage. The Triton tests run from committed fixtures (`test/fixtures/triton/`,
+`test/fixtures/trifast/`, Triton 3.8.0 output), so they need no Python; `test/fixtures/make_triton_fixture.py` and
+`make_trifast_fixture.py` regenerate them on an NVIDIA machine.

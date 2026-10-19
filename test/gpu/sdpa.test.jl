@@ -1,15 +1,14 @@
 # The tutorial example package (examples/SDPAOps) on the loaded GPU backend: its kernels against a
-# Float64 reference, the lazy variant build and its manifest, the example's own test file, and (Metal with
-# the jax-mps plugin only) both kernels traced as custom calls. The device-free half is cpu/sdpa.test.jl.
+# Float64 reference, the lazy variant build and its manifest, the example's own test file, and the kernels traced as
+# custom calls (on the backend's Reactant client). The device-free half is cpu/sdpa.test.jl.
 #
 # `FlashAttn` is a prebuilt `.metallib`: on any other backend only `SDPAKA` has a binary.
 
 using Test, Random, KernelDispatch, SDPAOps, Enzyme, Reactant
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))     # also keeps SDPAOps' manifests out of the user's cache
 isdefined(@__MODULE__, :sdpa_reference) || include(joinpath(@__DIR__, "..", "sdpa_helpers.jl"))
-Sys.isapple() && (isdefined(@__MODULE__, :mps_client) || include(joinpath(@__DIR__, "..", "mps_client.jl")))
 
-const SDPA_GPU_KERNELS = GPU === :metal ? (FlashAttn(), SDPAKA()) : (SDPAKA(),)
+const SDPA_GPU_KERNELS = (prebuilt_sdpa_kernels()..., SDPAKA())
 
 @testset "device" begin
     rng = Xoshiro(3)
@@ -43,7 +42,7 @@ const SDPA_GPU_KERNELS = GPU === :metal ? (FlashAttn(), SDPAKA()) : (SDPAKA(),)
         end
     end
 
-    GPU === :metal || @testset "FlashAttn has no binary off Metal" begin
+    isempty(prebuilt_sdpa_kernels()) && @testset "FlashAttn has no binary on this backend" begin
         @test_throws ArgumentError KernelDispatch.variant(SDPA(), FlashAttn(), (:Float32,))
     end
 end
@@ -54,26 +53,26 @@ end
     Base.include(Module(:SDPAExampleTests), joinpath(pkgdir(SDPAOps), "test", "runtests.jl"))
 end
 
-# Traced: the SAME binaries the eager path launches, embedded as `mps.metal_kernel_lib` custom calls.
-# Only Metal has a custom-call convention (jax-mps); see gpu/reactant.test.jl for what is asserted elsewhere.
-sdpa_mps = GPU === :metal ? mps_client() : nothing
-if sdpa_mps === nothing
-    @info "no jax-mps client (Metal only; set JAX_MPS_PLUGIN): skipping traced SDPAOps tests"
+# Traced: the SAME binaries the eager path launches, embedded as the backend's custom call (`TRACED_CALL_TARGET`), on the
+# backend's own Reactant client (`traced_client()`: jax-mps on Metal when the plugin is found, Reactant's CUDA client on
+# CUDA). `SDPAKA` puts its output first (`o, q, k, v, ...`), which the CUDA embedding supports by aliasing the output.
+sdpa_client = traced_client()
+if sdpa_client === nothing
+    @info "no traced client for $GPU (Metal needs the jax-mps plugin: JAX_MPS_PLUGIN): skipping traced SDPAOps tests"
 else
     prev = Reactant.XLA.default_backend()
-    Reactant.set_default_backend(sdpa_mps)
+    Reactant.set_default_backend(sdpa_client)
     try
         @testset "Reactant" begin
             rng = Xoshiro(4)
-            q, k, v = inputs(rng, 16, 100, 70, 8)
-            ref = sdpa_reference(q, k, v)
-            args = map(Reactant.to_rarray, (q, k, v))
             # The kernel is named in the call, not switched: nothing global changes under the trace.
-            for kern in (FlashAttn(), SDPAKA())
-                @testset "$kern" begin
+            for kern in SDPA_GPU_KERNELS
+                @testset "$kern" for (d, n, m, dv) in SDPA_SIZES
+                    q, k, v = inputs(rng, d, n, m, dv)
+                    args = map(Reactant.to_rarray, (q, k, v))
                     f(q, k, v) = KernelDispatch.forward(SDPA(), kern, q, k, v)
-                    @test Array(@jit f(args...)) ≈ ref rtol = 1e-3
-                    @test occursin("mps.metal_kernel_lib", repr(Reactant.@code_hlo optimize = false f(args...)))
+                    @test Array(@jit f(args...)) ≈ sdpa_reference(q, k, v) rtol = 1e-3
+                    @test occursin(TRACED_CALL_TARGET, repr(Reactant.@code_hlo optimize = false f(args...)))
                 end
             end
             @test current_kernel(SDPA()) === :flash

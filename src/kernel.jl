@@ -32,9 +32,13 @@ abstract type AbstractKernel end
 
 """
     KernelBinary(file; entry=basename without extension, threadgroup, tile=(threadgroup, 1, 1),
-        params=(;), is_ka=false)
+        params=(;), abi=:explicit, target="")
 
 One compiled launch, everything about it persisted with it in the manifest.
+
+- `file` is the compiled binary: a `.metallib` on Metal; a `.cubin` or `.ptx` on CUDA (a cubin is machine
+  code for one architecture, PTX is text the driver or XLA compiles at load). Any other extension is refused
+  on CUDA.
 
 - `entry` is the name of the kernel function inside `file`, the one the runtime launches. It defaults
   to the file name without its extension, which is right whenever the file is named after its
@@ -51,33 +55,62 @@ One compiled launch, everything about it persisted with it in the manifest.
   tuple is padded with 1s. It is a property of the build, so it changes with the binary when retuned.
   Any grid can be launched this way: with `tile=1`, the extent IS the grid.
 - `params` are the tuning numbers it was built with, for [`extras`](@ref) to read.
-- `is_ka` says the binary was compiled from a KernelAbstractions kernel ([`ka_compile`](@ref) sets
-  it), so it takes the backend's [`ka_state_words`](@ref) and KA's launch context ahead of its
-  arguments, and is dispatched flat. It is a property of the binary, not of the kernel
-  type that holds it: one kernel can register a KA-compiled binary for one launch and a Triton one
-  for another.
+- `abi` says what the binary takes besides the arguments `call_binary` binds, so the launcher can supply
+  it. `:explicit` (the default) takes nothing: exactly the buffers and scalars you bind, in the order given, with
+  nothing added or implied (`:plain`, its earlier name, is still accepted). `:ka` marks a binary
+  compiled from a KernelAbstractions kernel ([`ka_compile`](@ref) sets it): it takes the backend's
+  [`ka_state_words`](@ref) and KA's launch context ahead of its arguments (in the form the backend's
+  [`ka_prelude`](@ref) gives; CUDA passes the context as six integers), and is dispatched flat. An
+  extension can define another ABI (see `abi_prelude_and_grid`). It is a property of the binary, not of
+  the kernel type that holds it: one kernel can register a KA-compiled binary for one launch and a Triton
+  one for another. (`is_ka=true` and `b.is_ka` remain as deprecated aliases for `abi=:ka`.)
+- `target` names the device architecture the binary was built for (`"sm_86"` for a CUDA cubin), `""` when it
+  is portable (a `.metallib`, PTX). [`ka_compile`](@ref) sets it; a prebuilt file can say it, so a launch on
+  a device it cannot run on is refused with an explanation instead of failing in the driver.
+- `shared_mem` is the dynamic shared memory, in bytes, each threadgroup is launched with (a Triton kernel's
+  `shared`; see [`triton_binary`](@ref)). `0` for a kernel that declares its threadgroup memory itself, as
+  every Metal and KernelAbstractions kernel does. Metal ignores it.
 """
 struct KernelBinary
     file::String
     entry::String
     threadgroup::Int
     params::NamedTuple
-    is_ka::Bool
+    abi::Symbol
     tile::NTuple{3,Int}
+    target::String
+    shared_mem::Int
     # Fields of `params` kept sorted, so a binary compares equal to itself after a manifest round-trip.
-    function KernelBinary(file, entry, threadgroup, params::NamedTuple, is_ka::Bool, tile)
+    function KernelBinary(file, entry, threadgroup, params::NamedTuple, abi::Symbol, tile,
+            target::AbstractString="", shared_mem::Integer=0)
+        abi === :plain && (abi = :explicit)          # the earlier name of the default ABI
         t = _pad3(tile)
         all(>=(1), t) || throw(ArgumentError("`tile` must be positive along every axis, got $t"))
-        return new(String(file), String(entry), Int(threadgroup), _sorted(params), is_ka, t)
+        shared_mem >= 0 || throw(ArgumentError("`shared_mem` must be non-negative, got $shared_mem"))
+        return new(String(file), String(entry), Int(threadgroup), _sorted(params), abi, t, String(target),
+            Int(shared_mem))
     end
 end
 
-KernelBinary(file::AbstractString;
+function KernelBinary(file::AbstractString;
     entry::AbstractString=splitext(basename(file))[1],
     threadgroup::Integer,
     tile=(threadgroup, 1, 1),
     params::NamedTuple=NamedTuple(),
-    is_ka::Bool=false) = KernelBinary(file, entry, threadgroup, params, is_ka, tile)
+    abi::Symbol=:explicit,
+    target::AbstractString="",
+    shared_mem::Integer=0,
+    is_ka::Union{Nothing,Bool}=nothing)       # deprecated alias for `abi=:ka`
+    is_ka === true && (abi = :ka)
+    return KernelBinary(file, entry, threadgroup, params, abi, tile, target, shared_mem)
+end
+
+# `b.is_ka`, the pre-`abi` spelling: derived, so there is one source of truth.
+function Base.getproperty(b::KernelBinary, s::Symbol)
+    s === :is_ka && return getfield(b, :abi) === :ka
+    return getfield(b, s)
+end
+Base.propertynames(::KernelBinary, private::Bool=false) = (fieldnames(KernelBinary)..., :is_ka)
 
 # An extent or tile as three axes: an integer or a tuple of up to three, padded with 1s.
 _pad3(x::Integer) = (Int(x), 1, 1)
@@ -191,14 +224,16 @@ cache_dir(op::AbstractKernelOp) = joinpath(cache_root(), "ops",
 const Variant = Dict{Symbol,KernelBinary}
 const OPS = Dict{Symbol,AbstractKernelOp}()
 const KERNELS = Dict{Symbol,Dict{Symbol,AbstractKernel}}()
-const VARIANTS = Dict{Tuple{DataType,DataType},Dict{Tuple,Variant}}()
+const VARIANTS = Dict{Tuple{DataType,DataType,String},Dict{Tuple,Variant}}()
 
 """
-`variants(op, kernel) -> Dict{Tuple,Variant}`: the kernel's variants, by key. The first access in a
-session loads them from the kernel's manifest, so persisted variants need no registration.
+`variants(op, kernel; target=current_target()) -> Dict{Tuple,Variant}`: the kernel's variants, by key, for
+the device architecture `target` (see [`current_target`](@ref)): binaries built for one architecture are kept
+apart from another's. The first access in a session loads them from the kernel's manifest, so persisted
+variants need no registration.
 """
-variants(op::AbstractKernelOp, k::AbstractKernel) =
-    get!(() -> load_manifest(op, k), VARIANTS, (typeof(op), typeof(k)))
+variants(op::AbstractKernelOp, k::AbstractKernel; target::AbstractString=current_target()) =
+    get!(() -> load_manifest(op, k; target), VARIANTS, (typeof(op), typeof(k), String(target)))
 
 """
     register_kernel!(op, kernel) -> kernel
@@ -408,13 +443,14 @@ end
     "with a particular kernel."))
 
 """
-    variant(op, kernel, key) -> Variant
+    variant(op, kernel, key; target=current_target()) -> Variant
 
 The variant serving `key`: an exact match, else the kernel's [`nearest`](@ref) choice, else what
-its [`build!`](@ref) creates. Throws when none exists.
+its [`build!`](@ref) creates. Throws when none exists. `target` selects the architecture's variants;
+`build!` always builds for the current device, so a lookup for another target only finds what is registered.
 """
-function variant(op::AbstractKernelOp, k::AbstractKernel, key::Tuple)
-    vs = variants(op, k)
+function variant(op::AbstractKernelOp, k::AbstractKernel, key::Tuple; target::AbstractString=current_target())
+    vs = variants(op, k; target)
     v = _lookup(op, k, vs, key)
     isnothing(v) || return v
     build!(op, k, key)
@@ -433,8 +469,12 @@ end
 
 # --- manifest: one TOML per (op, kernel) -------------------------------------------------------------
 
-kernel_dir(op::AbstractKernelOp, k::AbstractKernel) = joinpath(cache_dir(op), String(kernelname(k)))
-manifest_path(op, k) = joinpath(kernel_dir(op, k), "manifest.toml")
+# `<cache_dir(op)>/[<target>/]<kernel>`: a device architecture's binaries have a directory of their own, so
+# machines with different GPUs can share a cache; no target (the host, Metal, portable) keeps the plain path.
+kernel_dir(op::AbstractKernelOp, k::AbstractKernel; target::AbstractString=current_target()) =
+    isempty(target) ? joinpath(cache_dir(op), String(kernelname(k))) :
+    joinpath(cache_dir(op), String(target), String(kernelname(k)))
+manifest_path(op, k; target::AbstractString=current_target()) = joinpath(kernel_dir(op, k; target), "manifest.toml")
 
 # Key elements are Symbols, integers or Bools; `repr` round-trips them through `Meta.parse`.
 _key_str(key::Tuple) = [repr(x) for x in key]
@@ -454,18 +494,22 @@ file. Binaries no variant names any more are removed.
 """
 function add_variant!(op::AbstractKernelOp, k::AbstractKernel, key::Tuple; binaries...)
     isempty(binaries) && throw(ArgumentError("a variant needs at least one binary"))
-    dir = kernel_dir(op, k)
+    return _add_variant!(op, k, key, binaries, current_target())
+end
+
+function _add_variant!(op::AbstractKernelOp, k::AbstractKernel, key::Tuple, binaries, target::AbstractString)
+    dir = kernel_dir(op, k; target)
     mkpath(dir)
     v = Variant()
-    for (name, b) in binaries
+    for (name, b) in pairs(binaries)
         isfile(b.file) || throw(ArgumentError("binary `$(b.file)` does not exist"))
         id = first(string(hash(read(b.file), hash((key, name))); base=16, pad=16), 8)
         dst = joinpath(dir, "$(name)_$(id)$(lowercase(splitext(b.file)[2]))")
         abspath(b.file) == abspath(dst) || cp(b.file, dst; force=true)
-        v[name] = KernelBinary(dst, b.entry, b.threadgroup, b.params, b.is_ka, b.tile)
+        v[name] = KernelBinary(dst, b.entry, b.threadgroup, b.params, b.abi, b.tile, b.target, b.shared_mem)
     end
-    variants(op, k)[key] = v
-    save_manifest(op, k)
+    variants(op, k; target)[key] = v
+    save_manifest(op, k; target)
     return v
 end
 
@@ -473,30 +517,35 @@ end
 add_variant!(op::AbstractKernelOp, k::AbstractKernel; kwargs...) = 
     add_variant!(op, k, (); kwargs...)
 
-function save_manifest(op, k)
-    vs = variants(op, k)
-    tbl = Dict{String,Any}("source_tag" => source_tag(k), "variant" => [
+# 2: `abi` and `target` per binary replace `is_ka` (a version-1 manifest, with `is_ka`, still loads).
+const MANIFEST_VERSION = 2
+
+function save_manifest(op, k; target::AbstractString=current_target())
+    vs = variants(op, k; target)
+    tbl = Dict{String,Any}("format_version" => MANIFEST_VERSION, "source_tag" => source_tag(k), "variant" => [
         Dict{String,Any}("key" => _key_str(key), "binary" => [
             Dict{String,Any}("name" => String(n), "file" => basename(b.file), "entry" => b.entry,
-                "threadgroup" => b.threadgroup, "tile" => collect(b.tile), "is_ka" => b.is_ka, "params" => Dict(String(p) => x for (p, x) in pairs(b.params)))
+                "threadgroup" => b.threadgroup, "tile" => collect(b.tile), "abi" => String(b.abi),
+                "target" => b.target, "shared_mem" => b.shared_mem, "params" => Dict(String(p) => x for (p, x) in pairs(b.params)))
             for (n, b) in sort(collect(v); by=first)])
         for (key, v) in sort(collect(vs); by=string ∘ first)])
-    open(io -> TOML.print(io, tbl), manifest_path(op, k), "w")
+    open(io -> TOML.print(io, tbl), manifest_path(op, k; target), "w")
     # Binaries no variant names any more (a re-registered variant's predecessor) are removed. Only
     # regular files: a package may keep its own data beside a kernel's binaries in a subdirectory
     # (a tuning calibration, say).
     keep = Set(basename(b.file) for v in values(vs) for b in values(v))
-    for f in readdir(kernel_dir(op, k))
-        path = joinpath(kernel_dir(op, k), f)
+    kdir = kernel_dir(op, k; target)
+    for f in readdir(kdir)
+        path = joinpath(kdir, f)
         (f == "manifest.toml" || f in keep || !isfile(path)) || rm(path; force=true)
     end
 end
 
 # Never throws: a missing, corrupt or stale manifest is simply no variants — a kernel that can build
 # its own (`build!`) rebuilds, any other is registered again.
-function load_manifest(op, k)
+function load_manifest(op, k; target::AbstractString=current_target())
     out = Dict{Tuple,Variant}()
-    path = manifest_path(op, k)
+    path = manifest_path(op, k; target)
     isfile(path) || return out
     try
         raw = TOML.parsefile(path)
@@ -507,9 +556,10 @@ function load_manifest(op, k)
             for bd in vd["binary"]
                 file = joinpath(dir, bd["file"])
                 isfile(file) || (v = nothing; break)
+                abi = haskey(bd, "abi") ? Symbol(bd["abi"]) : (get(bd, "is_ka", false) ? :ka : :explicit)
                 v[Symbol(bd["name"])] = KernelBinary(file, bd["entry"], bd["threadgroup"],
-                    NamedTuple(Symbol(p) => x for (p, x) in bd["params"]), get(bd, "is_ka", false),
-                    get(bd, "tile", (bd["threadgroup"], 1, 1)))
+                    NamedTuple(Symbol(p) => x for (p, x) in bd["params"]), abi,
+                    get(bd, "tile", (bd["threadgroup"], 1, 1)), get(bd, "target", ""), get(bd, "shared_mem", 0))
             end
             isnothing(v) || (out[_key_parse(vd["key"])] = v)
         end

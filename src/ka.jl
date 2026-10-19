@@ -39,7 +39,7 @@ ka_grid(be::KernelBackend, ::NTuple{3,Int}) = throw(ArgumentError(
 
 The bits values a KernelAbstractions-compiled binary takes ahead of KA's launch context, in order:
 whatever the backend's KA kernels pass as hidden leading arguments (Metal.jl's kernel-state word, say).
-Implemented by the backend extension for its own tag; `()` if its kernels take none. There is no
+Implemented by the backend extension for its own tag; `()` if its kernels take none (CUDA's are built without one). There is no
 default, so a backend that forgets fails here instead of launching with a shifted argument list.
 """
 ka_state_words(be::KernelBackend) = throw(ArgumentError(
@@ -49,7 +49,8 @@ ka_state_words(be::KernelBackend) = throw(ArgumentError(
     ka_prelude(backend, ctx, ghost) -> Vector{Any}
 
 What a KernelAbstractions-compiled binary takes ahead of its arguments: the backend's
-[`ka_state_words`](@ref), then KA's launch context unless it is a ghost type. A `Vector{Any}`: the
+[`ka_state_words`](@ref), then KA's launch context unless it is a ghost type. (A backend may pass the context in
+another form: CUDA passes its six integers, the ND-range and the block counts, as separate scalars.) A `Vector{Any}`: the
 context's type depends on the threadgroup VALUE, and keeping that out of the binder's signature keeps
 `call_binary` inferable.
 """
@@ -57,28 +58,48 @@ ka_prelude(be::KernelBackend, ctx, ghost::Bool) =
     (p = Any[ka_state_words(be)...]; ghost || push!(p, ctx); p)
 
 """
-    ka_binary_cache_dir() -> String
+    ka_layout(backend) -> Union{Nothing,Symbol}
 
-Where [`ka_compile`](@ref) builds binaries by default: `ka` under [`cache_root`](@ref). Output is only
+How `backend` lays out what a KernelAbstractions binary takes ahead of its arguments, when that is a layout it has
+changed over time: `nothing` (the default, and Metal) records nothing. A backend that returns a symbol has
+[`ka_compile`](@ref) store it in the binary's `params` as `ka_layout`, and can refuse (through
+[`compatible_target`](@ref)) a binary built with another layout instead of launching it with shifted arguments.
+CUDA returns `:flat`: no kernel-state argument, and KA's context as six plain integers.
+"""
+ka_layout(::KernelBackend) = nothing
+
+"""
+    ka_binary_cache_dir(target=current_target()) -> String
+
+Where [`ka_compile`](@ref) builds binaries by default: `ka` under [`cache_root`](@ref), in a subdirectory named
+for the device architecture (`ka/sm_86`) when there is one, so a cache shared by machines with different GPUs
+never serves one's binary to another. Output is only
 staged here — [`add_variant!`](@ref) copies a registered binary into the registry, which is where
 kernels live — but it is kept between sessions, so a `name` already built is found, not rebuilt.
 """
-ka_binary_cache_dir() = joinpath(cache_root(), "ka")
+ka_binary_cache_dir(target::AbstractString=current_target()) =
+    isempty(target) ? joinpath(cache_root(), "ka") : joinpath(cache_root(), "ka", String(target))
 
 """
-    ka_compile(backend, kernel, argtypes::Tuple; tg, name, params=(;), tile=(tg, 1, 1), dir=ka_binary_cache_dir()) -> KernelBinary
+    ka_compile(backend, kernel, argtypes::Tuple; tg, name, params=(;), tile=(tg, 1, 1), dir=ka_binary_cache_dir(target_id(backend))) -> KernelBinary
 
 Ahead-of-time compile the KernelAbstractions `kernel` at workgroup size `tg` to a binary at
 `joinpath(dir, name * ext)` whose entry point is `name`, and return it as a [`KernelBinary`](@ref) with
-`is_ka=true` (and the given tuning `params`), ready for [`add_variant!`](@ref). Rebuilt only when absent —
+`abi = :ka` (and the given tuning `params`), ready for [`add_variant!`](@ref). Rebuilt only when absent —
 put a source hash in `name`. `tile` defaults to one item per thread; a kernel whose threads each cover
 several items says so here.
 
 This is the KernelAbstractions producer of binaries and it belongs to the launch side: the binary is 
 built against the launch context ([`ka_context`](@ref)) and argument pointer types that `call_binary` 
-binds for an `is_ka` binary, so compiling by other means binds wrongly, silently. `dir` is where the 
+binds for an `abi = :ka` binary, so compiling by other means binds wrongly, silently. `dir` is where the 
 file is built, by default [`ka_binary_cache_dir`](@ref): not part of the registry, which is where kernels 
 live. [`add_variant!`](@ref) copies what it registers into it.
+
+On CUDA the binary is built without CUDA.jl's kernel state (and with KA's context as six plain integers): its
+parameters are only device pointers and scalars, so the same file launches eagerly and from a Reactant trace. The
+price is that a kernel whose compiled code can still throw (a bounds check, a `DomainError`, `error`) is refused here,
+at build time, because a device cannot report an exception without that state; index with `unsafe_load` /
+`unsafe_store!` as the binary contract already says. `params` gains a reserved `ka_layout` entry ([`ka_layout`](@ref)).
 
 `argtypes` lists the kernel's arguments after KA's context, in signature order: `AbstractArray{T}`
 for a buffer (bound as a raw device pointer to `T`; the kernel indexes it with `unsafe_load` /
@@ -90,10 +111,12 @@ function ka_compile(be::KernelBackend, kernel, argtypes::Tuple;
     name::AbstractString,
     params::NamedTuple=NamedTuple(),
     tile=(tg, 1, 1),
-    dir::AbstractString=ka_binary_cache_dir()
+    dir::AbstractString=ka_binary_cache_dir(target_id(be))
 )
     path = _ka_compile(be, kernel, argtypes, Int(tg), String(name), String(dir))
-    return KernelBinary(path; threadgroup=tg, tile, params, is_ka=true)
+    layout = ka_layout(be)
+    isnothing(layout) || (params = merge(params, (; ka_layout=String(layout))))
+    return KernelBinary(path; threadgroup=tg, tile, params, abi=:ka, target=target_id(be))
 end
 
 function _ka_compile end

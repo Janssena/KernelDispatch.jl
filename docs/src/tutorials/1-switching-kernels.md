@@ -19,7 +19,7 @@ The below is an example from a hypothetical SDPAOps package implementing a SPDA 
 struct SDPA <: AbstractKernelOp end
 opname(::SDPA) = :sdpa                       # optional: a stable name (default = struct name, i.e. `:SDPA`)
 
-struct FlashAttn <: AbstractKernel end       # a prebuilt Metal binary
+struct FlashAttn <: AbstractKernel end       # a prebuilt binary (a Metal `.metallib` in the example package)
 struct SDPAKA <: AbstractKernel end          # a KernelAbstractions kernel, compiled to a binary
 kernelname(::FlashAttn) = :flash             # optional (default = struct name, i.e. `:FlashAttn`)
 kernelname(::SDPAKA) = :ka
@@ -39,6 +39,15 @@ KernelDispatch.@default_kernel SDPA FlashAttn() SDPAKA()
 
 What a kernel needs beyond this is the subject of [tutorial 2](2-registering-kernels.md).
 
+!!! note "Kernels and backends"
+    A kernel is a *source* of binaries, and a binary belongs to a backend: a `.metallib` runs on Metal only, a
+    `.cubin` or `.ptx` on CUDA only, and a KernelAbstractions kernel on whichever backend is loaded. Selecting a kernel
+    does not change that. In the example package `FlashAttn` ships a `.metallib`, so its default registers a variant on
+    Metal only; on CUDA the default selection has no binary to launch and the call throws, naming the variant key it
+    looked for. There, select the KA kernel (`use_kernel!(:sdpa, :ka)`, or `set_default_kernel!` below) or register a
+    `.cubin` for `FlashAttn` ([tutorial 2](2-registering-kernels.md)). Everything else on this page is the same on every
+    backend.
+
 ## Inspecting and switching for a session
 
 ```julia
@@ -49,7 +58,7 @@ julia> current_kernel(:sdpa)
 
 julia> o = SDPA()(q, k, v);                   # runs the `:flash` kernel for device arrays
 
-julia> list_kernels(:sdpa)
+julia> list_kernels(:sdpa)                    # on Metal; on CUDA `:flash` has no variant (0) until you register one
 2-element Vector{@NamedTuple{name::Symbol, nvariants::Int64, selected::Bool}}:
  (name = :flash, nvariants = 1, selected = 1)
  (name = :ka, nvariants = 0, selected = 0)

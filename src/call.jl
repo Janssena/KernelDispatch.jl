@@ -16,10 +16,32 @@ OutArray(::Type{T}, dims::Tuple; zero::Bool=false) where {T} = OutArray(T, dims.
 
 Base.eltype(::OutArray{T}) where {T} = T
 
-function _first_array(xs)   
-    i = findfirst(Base.Fix2(isa, AbstractArray), xs);
-    return isnothing(i) ? nothing : xs[i]
+"""
+    InOutArray(x::AbstractArray)
+
+An argument the kernel both reads and updates in place (`y += a * x`, a read-modify-write output), bound where the
+array would be. It is returned among the outputs, in [`OutArray`](@ref) order, as the UPDATED array:
+
+- **eagerly** it is `x` itself, written by the kernel (so `x` must be a dense device array, not a view or wrapper that
+  would have to be copied: that is refused);
+- **in a trace** the array is the call's operand and its result is aliased to it (`output_operand_aliases`), so the kernel
+  sees `x`'s values, and the returned array is the updated one. XLA copies `x` first if it is still used afterwards, so
+  the program stays functional: `x` itself is not changed.
+
+An [`OutArray`](@ref) starts as a fresh (zero) buffer, an `InOutArray` starts as `x`. Not supported on Metal under a trace
+(jax-mps cannot alias a result to an operand).
+"""
+struct InOutArray{A<:AbstractArray}
+    array::A
 end
+
+# The first argument that is an array (an `InOutArray` counts as its array): it decides the backend. Recursive over the
+# argument tuple, so the result type infers (a loop over a heterogeneous tuple would not).
+_first_array(xs::Tuple) = _first_array_(xs...)
+_first_array_() = nothing
+_first_array_(x::AbstractArray, rest...) = x
+_first_array_(x::InOutArray, rest...) = x.array
+_first_array_(x, rest...) = _first_array_(rest...)
 
 """
     (op::AbstractKernelOp)(args...)
@@ -48,7 +70,8 @@ end
 
 Launch binary `name` of the variant for `key`, binding `(args..., extras(op, kernel, binary)...)`
 IN THE ORDER GIVEN: an [`OutArray`](@ref) is allocated (or a traced result), an array is bound in place,
-a number by value, a `Val` not at all. Returns the outputs, in `OutArray` order. Getting the order
+an [`InOutArray`](@ref) is an array the kernel updates (returned too), a number by value, a `Val` not at all. Returns the
+outputs, in the order of the `OutArray`s and `InOutArray`s. Getting the order
 right is the caller's job.
 
 It launches `cld.(extent, tile)` threadgroups: the problem size `extent` (an integer or a tuple of up to
@@ -108,10 +131,10 @@ One concrete launch of a [`KernelBinary`](@ref), made by [`prepare_launch`](@ref
 - `binary`: what is launched;
 - `args`, `extras`: the arguments as they will be bound (device wrappers already densified),
   `OutArray`s still unallocated. `args` is a typed tuple, so the outputs' types infer;
-- `prelude`: what the binary takes ahead of its arguments (for an `is_ka` binary the backend's state
+- `prelude`: what the binary takes ahead of its arguments (for an `abi = :ka` binary the backend's state
   words and KA's context, else nothing);
 - `groups`: the threadgroups the problem needs, `cld.(extent, tile)`;
-- `grid`: the grid actually dispatched (`groups`, flattened by [`ka_grid`](@ref) for an `is_ka` binary);
+- `grid`: the grid actually dispatched (`groups`, flattened by [`ka_grid`](@ref) for an `abi = :ka` binary);
 - `label`: its name in [`record_bindings`](@ref).
 """
 struct Launch{A<:Tuple,E<:Tuple,P<:AbstractVector}
@@ -128,7 +151,7 @@ end
     prepare_launch(b::KernelBinary, args...; extent, extras=(), label=Symbol(b.entry)) -> Launch
 
 Turn a problem size into a concrete [`Launch`](@ref) of `b`, without running it: `cld.(extent, b.tile)`
-threadgroups, the KA prelude and flat grid for an `is_ka` binary, device wrappers densified
+threadgroups, the prelude and grid of the binary's ABI (KA's context and flat grid for `:ka`), device wrappers densified
 ([`device_dense`](@ref)). The binary need not be registered. Binding follows [`call_binary`](@ref):
 `(args..., extras...)` in the order given.
 """
@@ -144,9 +167,10 @@ function prepare_launch(b::KernelBinary, args...;
     isnothing(proto) && throw(ArgumentError("binary `$(b.entry)` was launched without any array argument"))
     
     be = backend_of(proto)
+    be isa GPUBackend && check_binary(be, b)
     groups = cld.(_pad3(extent), b.tile)
     prelude, grid = _prelude_and_grid(be, b, groups)
-    _make_dense = Base.Fix1(device_dense, be)
+    _make_dense = Base.Fix1(_dense_arg, be)
 
     return Launch(
         b, 
@@ -156,14 +180,40 @@ function prepare_launch(b::KernelBinary, args...;
     )
 end
 
-# What `b` takes ahead of its arguments, and the grid it is dispatched on, for `groups` threadgroups. A
-# KA-compiled binary: KA's context (built by KA from this grid) ahead of the arguments, and the
-# backend's own dispatch grid.
-function _prelude_and_grid(be::KernelBackend, b::KernelBinary, groups::NTuple{3,Int})
-    b.is_ka || return (Any[], groups)
-    ctx, ghost = ka_context(be, groups, b.threadgroup)
-    return (ka_prelude(be, ctx, ghost), ka_grid(be, groups))
+# An argument as it will be bound: device wrappers densified. An `InOutArray` is written by the kernel, so its array must
+# BE the dense one: a copy would take the update and lose it.
+_dense_arg(be, x) = device_dense(be, x)
+function _dense_arg(be, x::InOutArray)
+    y = device_dense(be, x.array)
+    y === x.array || throw(ArgumentError(
+        "an `InOutArray` argument must be a dense array the kernel can write in place, not a $(typeof(x.array)) " *
+        "(which would be copied first, losing the update): pass `parent(x)` or `collect` it into an array"))
+    return x
 end
+
+# What `b` takes ahead of its arguments, and the grid it is dispatched on, for `groups` threadgroups, by its
+# ABI. The two built-in ABIs are branched on, not dispatched, so the result infers; any other ABI is an
+# extension's (`abi_prelude_and_grid`), asserted to the same type.
+function _prelude_and_grid(be::KernelBackend, b::KernelBinary, groups::NTuple{3,Int})
+    abi = getfield(b, :abi)
+    abi === :explicit && return (Any[], groups)
+    if abi === :ka     # KA's context (built by KA from this grid) ahead of the arguments, the backend's own grid
+        ctx, ghost = ka_context(be, groups, b.threadgroup)
+        return (ka_prelude(be, ctx, ghost), ka_grid(be, groups))
+    end
+    return abi_prelude_and_grid(Val(abi), be, b, groups)::Tuple{Vector{Any},NTuple{3,Int}}
+end
+
+"""
+    abi_prelude_and_grid(::Val{abi}, backend, b::KernelBinary, groups) -> (prelude::Vector{Any}, grid::NTuple{3,Int})
+
+What a binary of a non-built-in ABI (`b.abi`, neither `:explicit` nor `:ka`) takes ahead of its arguments, and the
+grid it is dispatched on. An extension that supports such a binary (a Triton one, say) defines a method for its
+`Val{:name}`. No default: a binary whose ABI nothing implements is refused here, not launched with a shifted
+argument list.
+"""
+abi_prelude_and_grid(::Val{A}, be::KernelBackend, b::KernelBinary, groups) where {A} = throw(ArgumentError(
+    "binary `$(b.entry)` declares ABI `:$A`, which no loaded extension implements for $(typeof(be))"))
 
 """
     execute(l::Launch) -> Tuple
@@ -182,12 +232,12 @@ execute(proto, ::Launch) = throw(ArgumentError(
     bind_slots(proto, prelude, args, extras) -> (bound, slots)
 
 The one binding rule, shared by every eager launch ([`execute`](@ref), [`time_binary`](@ref)):
-each [`OutArray`](@ref) of `args` is allocated like `proto` (zero-filled if it asks), giving `bound`;
-`slots` are `(prelude..., bound..., extras...)` in order, a `Val` taking no slot.
+each [`OutArray`](@ref) of `args` is allocated like `proto` (zero-filled if it asks) and each [`InOutArray`](@ref) is
+its array, giving `bound`; `slots` are `(prelude..., bound..., extras...)` in order, a `Val` taking no slot.
 """
 function bind_slots(proto, prelude, args::Tuple, extras::Tuple)
     bound = map(args) do a
-        return a isa OutArray ? _alloc_out(proto, a) : a
+        return a isa OutArray ? _alloc_out(proto, a) : a isa InOutArray ? a.array : a
     end
     
     slots = Any[prelude...]
@@ -319,7 +369,7 @@ const _RECORD = Ref{Union{Nothing,Vector{Any}}}(nothing)
 
 Run `f()` with every eager launch replaced by a record of what it would bind: the launch's `label`
 (the name `call_binary` was given), its `slots` in order, each `kind => value` with `kind` one of
-`:bytes` (the KA prelude), `:out` (an allocated output), `:in` (an array), `:scalar`, and the
+`:bytes` (the KA prelude), `:out` (an allocated output), `:inout` (an array updated in place), `:in` (an array), `:scalar`, and the
 threadgroups it would launch, `groups` (`cld.(extent, tile)`, before any flattening by
 [`ka_grid`](@ref)), and the [`Launch`](@ref) itself, which can be run or timed later
 ([`execute`](@ref), [`time_binary`](@ref)) to replay what `f` launches. Nothing is dispatched. A record
@@ -342,8 +392,8 @@ recording() = _RECORD[] !== nothing
 record!(l::Launch, slots) = 
     push!(_RECORD[], (; label=l.label, slots=Tuple(slots), groups=l.groups, launch=l))
 
-# The allocated outputs, picked out of the bound arguments in `OutArray` order. Recursive over the tuple,
-# so the result type is inferred.
+# The allocated outputs (and updated `InOutArray`s), picked out of the bound arguments in argument order. Recursive over the
+# tuple, so the result type is inferred.
 _pick_outs(::Tuple{}, ::Tuple{}) = ()
-_pick_outs(a::Tuple, b::Tuple) = first(a) isa OutArray ?
+_pick_outs(a::Tuple, b::Tuple) = first(a) isa Union{OutArray,InOutArray} ?
     (first(b), _pick_outs(Base.tail(a), Base.tail(b))...) : _pick_outs(Base.tail(a), Base.tail(b))
