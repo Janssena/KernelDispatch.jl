@@ -11,6 +11,7 @@ makedocs(;
         canonical = "https://janssena.github.io/KernelDispatch.jl",
         edit_link = "main",
         prettyurls = get(ENV, "CI", "false") == "true",
+        assets = ["assets/custom.css"],
     ),
     pages = [
         "Home" => "index.md",
