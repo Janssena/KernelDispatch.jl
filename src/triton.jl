@@ -12,8 +12,10 @@
     triton_binary(metadata_json; image=nothing, tile=1, params=(;), scratch_pointers=nothing) -> KernelBinary
 
 Describe a kernel Triton compiled for NVIDIA as a [`KernelBinary`](@ref) (`abi = :triton`), from the metadata
-JSON Triton wrote beside its output (in `~/.triton/cache/<hash>/`, or `TRITON_CACHE_DIR`: `<name>.json`
-next to `<name>.cubin` and `<name>.ptx`). Register it like any binary:
+JSON Triton wrote beside its output (`<name>.json` next to `<name>.cubin` and `<name>.ptx`). Where those files are is
+your build step's choice: compile ahead into a directory you control. (Triton's own JIT cache, `<hash>/` directories
+under its cache directory, `TRITON_CACHE_DIR` to move it, also holds them, but the hash names are opaque and Triton
+may rewrite or clear them.) Register it like any binary:
 
     add_variant!(op, kernel, key; fwd=triton_binary("scale_kernel.json"))
 
