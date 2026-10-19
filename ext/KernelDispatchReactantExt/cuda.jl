@@ -8,7 +8,7 @@
 # What the handler cannot do bounds what can be launched this way:
 #   - parameters are device buffers and bool/32-bit/64-bit scalars: no by-value structs. That is why CUDA's
 #     KernelAbstractions binaries (`abi = :ka`) are built flat (no `KernelState`, KA's context as six integers; see
-#     the CUDA extension), and why plain pointer-and-scalar binaries (nvcc, Triton, hand-written PTX) work.
+#     the CUDA extension), and why `:explicit` pointer-and-scalar binaries (nvcc, Triton, hand-written PTX) work.
 #   - threads per block are `num_warps * 32`, one-dimensional: `threadgroup` is a multiple of 32.
 #   - XLA hands the handler its operands, then its results, as buffers, and each buffer parameter takes the next
 #     one in that order. A kernel's own parameter order is arbitrary (`f!(out, in...)`, outputs last, scalars between
@@ -175,7 +175,7 @@ The CUDA embedding: a `stablehlo.custom_call` to a `triton_kernel_call` handler 
 `.ptx`) at `path`; see this file's header for what it can and cannot launch. Each output is an aliased, zero-filled
 operand in the kernel's own parameter position, so the kernel's buffer order is unrestricted.
 """
-function KO.custom_call(::KO.CUDABackendTag, entry, path, operands, result_shapes, layout;
+function KD.custom_call(::KD.CUDABackendTag, entry, path, operands, result_shapes, layout;
         grid, threadgroup, result_eltypes=ntuple(Returns(Float32), length(result_shapes)),
         shared_mem::Integer=0, reverse=nothing, active_operands=nothing
 )

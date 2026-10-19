@@ -39,5 +39,5 @@ end
 
 The Metal embedding: [`_metal_kernel_lib`](@ref) (`mps.metal_kernel_lib`).
 """
-KO.custom_call(::KO.MetalBackendTag, entry, path, operands, result_shapes, layout; kw...) =
+KD.custom_call(::KD.MetalBackendTag, entry, path, operands, result_shapes, layout; kw...) =
     _metal_kernel_lib(entry, path, operands, result_shapes, layout; kw...)
