@@ -26,7 +26,7 @@ the preparation:
 _sizes(q, k, v) = (Int32(size(q, 1)), Int32(size(q, 2)), Int32(size(k, 2)), Int32(size(v, 1)))
 _scale(q) = inv(sqrt(Float32(size(q, 1))))
 
-# The Metal binary: inputs, the output, n, m, d, dv, scale.
+# The prebuilt binary (a `.metallib` here): inputs, the output, n, m, d, dv, scale.
 function forward(op::SDPA, kern::FlashAttn, q, k, v)
     d, n, m, dv = _sizes(q, k, v)
     return only(call_binary(op, kern, :fwd, q, k, v, OutArray(Float32, dv, n), n, m, d, dv, _scale(q);
@@ -106,7 +106,7 @@ end
 
 `variant_key` sees each launch's own argument list, so the `:bwd` call passes `key=` rather than adding
 a second `variant_key` method for the longer list. `extent=m` (one item per key, say) is divided by the
-`:bwd` binary's own `tile`. `KernelBinary.is_ka` is per binary, so a KA-compiled forward and a Triton
+`:bwd` binary's own `tile`. `KernelBinary.abi` is per binary, so a KA-compiled forward and a Triton
 backward can share a variant.
 
 ## Gradients with Enzyme
@@ -132,8 +132,8 @@ Enzyme may refuse to treat as constant.
 
 ### On GPU arrays
 
-Enzyme can differentiate the op call on `MtlArray`s through the rule, but not ordinary Metal.jl code
-around it (a broadcast, a `sum`). So differentiate the op call alone, in split mode, and seed the
+Enzyme can differentiate the op call on device arrays (`MtlArray`, `CuArray`) through the rule, but not ordinary
+Metal.jl or CUDA.jl code around it (a broadcast, a `sum`). So differentiate the op call alone, in split mode, and seed the
 output's cotangent yourself:
 
 ```julia
@@ -145,14 +145,15 @@ function gpu_grads(qd, kd, vd, w)
         Duplicated{typeof(qd)}, Duplicated{typeof(kd)}, Duplicated{typeof(vd)})
     args = (Const(f), Duplicated(qd, gq), Duplicated(kd, gk), Duplicated(vd, gv))
     tape, o, dout = fwd(args...)      # forward: o, and a zero shadow of it
-    dout .= MtlArray(w)               # the cotangent of o, e.g. ∂loss/∂o for loss = sum(o .* w)
+    copyto!(dout, w)                  # the cotangent of o, e.g. ∂loss/∂o for loss = sum(o .* w)
     rev(args..., tape)                # reverse: your backward, accumulated into gq, gk, gv
     return o, gq, gk, gv
 end
 ```
 
 With the same `w`, `gq`, `gk`, `gv` match the host gradients above. That comparison is a good test of
-a backward: `SDPAOps`' test suite does it for both kernels.
+a backward: `SDPAOps`' test suite does it for both kernels. The same rule runs on CUDA: `test/ext/cuda/smoke.jl`
+stage 9 differentiates a forward/backward pair of binaries on `CuArray`s this way.
 
 **Switch kernels before building the thunk, at top level.** An Enzyme thunk is compiled once and
 keeps the kernel selected when it was built. Calling it after a switch throws the stale-switch error
@@ -170,3 +171,17 @@ differentiate a custom call yet (EnzymeAD/Enzyme#2516), so a gradient traced *th
 instead of silently giving a wrong answer. Call `backward` directly on the traced arrays instead; it is
 ordinary traced code, and a `:bwd` binary becomes a custom call of its own. Once Enzyme-JAX supports
 it, `KernelDispatch.KERNEL_IN_TRACED_AUTODIFF[] = true` lifts the check.
+
+What the custom call is differs by backend, and so does what a `forward` must respect to be traceable:
+
+| | Metal | CUDA |
+|:--|:--|:--|
+| custom call | `mps.metal_kernel_lib` (the jax-mps plugin; set `JAX_MPS_PLUGIN` to its library) | `triton_kernel_call_ffi`, XLA's own kernel-call handler |
+| scalar arguments | any size, as bytes | 1, 4 or 8 bytes (so not `Float16`) |
+| `threadgroup` | up to the pipeline's limit | a multiple of 32, at most 1024 |
+| outputs | `OutArray(...; zero=true)` is zero-filled, others are not | every output starts as zeros |
+| buffer order | free | free (outputs are aliased operands) |
+| reverse rule on the custom call | attachable | refused today |
+
+Both backends launch a given binary file the same way eagerly and traced, so a `forward` written once serves both; the
+rows above are the places a binary that works eagerly can still be refused in a trace, with an explanation.

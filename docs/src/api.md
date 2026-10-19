@@ -4,6 +4,9 @@
 CurrentModule = KernelDispatch
 ```
 
+This page is the API: what a user calls and what a kernel author defines. What a *backend* implements (a new
+GPU vendor, a new binary ABI) is on the [backend interface](backend.md) page and may change.
+
 ```@docs
 KernelDispatch
 ```
@@ -15,6 +18,7 @@ AbstractKernelOp
 AbstractKernel
 KernelBinary
 OutArray
+InOutArray
 ```
 
 The methods a kernel or op defines:
@@ -67,9 +71,7 @@ Launch
 execute
 time_binary
 record_bindings
-bind_slots
 max_threads
-device_time
 ```
 
 ## KernelAbstractions kernels
@@ -77,14 +79,15 @@ device_time
 ```@docs
 ka_compile
 ka_binary_cache_dir
-ka_context
-ka_grid
-ka_backend_object
-ka_state_words
-ka_prelude
 ```
 
-## Backends
+## Triton kernels
+
+```@docs
+triton_binary
+```
+
+## Backends and devices
 
 ```@docs
 KernelBackend
@@ -97,13 +100,10 @@ GPUBackend
 backend_of
 device_backend
 device_available
-device_dense
+current_target
 device_zeros
-custom_call
 cache_root
 realtype
-LOADED_BACKENDS
-encode_launch
 ```
 
 ## Autodiff and tracing

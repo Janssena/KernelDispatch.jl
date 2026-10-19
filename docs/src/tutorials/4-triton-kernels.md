@@ -1,20 +1,48 @@
-# 4. Compiling a Triton kernel to a `.metallib` with triton-msl
+# 4. Triton kernels, on Metal and on NVIDIA
 
-[triton-msl](https://github.com/bledden/triton-msl) is a Metal backend for Triton: it lowers a
-`@triton.jit` kernel through Triton's own pipeline to Metal Shading Language and on to a
-`.metallib`. Compiled ahead of time, that file is just one more binary for KernelDispatch, registered exactly
-like the hand-written one in [tutorial 2](2-registering-kernels.md).
+[Triton](https://triton-lang.org) compiles a Python kernel to a GPU binary. Compiled ahead of time, that binary is just
+one more source for KernelDispatch, registered and launched like the hand-written ones in
+[tutorial 2](2-registering-kernels.md). The compiler and what it writes differ by backend, so this tutorial has a part for
+each:
 
-This is for example how [trifast](https://github.com/latkins/trifast)'s triangle-attention kernels reach
-LuxTriangleAttention. `trifast/src/trifast/metal.py` (`build(dim=32)`) is the working reference this
-tutorial follows.
+| | **A. Metal** | **B. NVIDIA** |
+|:--|:--|:--|
+| compiler | [triton-msl](https://github.com/bledden/triton-msl), a third-party Metal backend for Triton | Triton itself |
+| what it writes | a `.metallib`, plus a descriptor you write | `<name>.cubin`, `.ptx` and `<name>.json`, by Triton |
+| turned into a `KernelBinary` by | `KernelBinary(...)` | [`triton_binary`](@ref) |
+| `threadgroup` | `compiled.metadata.block_size` | `num_warps * 32`, read from the JSON |
+| scalar arguments | one buffer each; the argument list is short (31 buffer slots) | by value; constexprs and integers equal to 1 are dropped from the signature |
+| hidden parameters | none (checked: no packed-scalar buffer) | two trailing scratch pointers, passed for you |
+| shared memory | declared in the kernel | the JSON's `shared`, raised past 48 KB for you |
+| `tile` | what one threadgroup covers | `1`: `extent` is the grid of programs |
+| status in this repository | follows trifast's build; not run by the test suite | tested on an NVIDIA A40 with Triton 3.8.0 (see B) |
 
-> **Status.** Tutorials 1–3 are checked by the example package's test suite. This one is not: it
+[trifast](https://github.com/latkins/trifast)'s triangle-attention kernels are the working example for both: on Metal they
+reach LuxTriangleAttention through `trifast/src/trifast/metal.py`, and on NVIDIA their original CUDA kernels run through
+KernelDispatch unmodified.
+
+What both have in common, from the Julia side:
+
+- **Pointers are the raw buffers of Julia arrays**, which are **column-major**.
+- **Scalars must have the types the signature says**: `i32` is an `Int32`, `fp32` a `Float32`.
+- **`tl.program_id(axis)`** is the position in the grid KernelDispatch launches: with `tile=1`, one threadgroup per item,
+  `tl.program_id(0)` runs over the call's `extent`.
+- **`tl.constexpr` arguments are compiled in.** They are not passed at launch, so they belong in the binary's name and in the
+  variant key.
+- **Pass exactly the arguments the compiled signature declares**, in its order.
+
+## A. Metal: triton-msl to a `.metallib`
+
+[triton-msl](https://github.com/bledden/triton-msl) lowers a `@triton.jit` kernel through Triton's own pipeline to Metal
+Shading Language and on to a `.metallib`. `trifast/src/trifast/metal.py` (`build(dim=32)`) is the working reference this part
+follows.
+
+> **Status.** Tutorials 1–3 are checked by the example package's test suite. Part A is not: it
 > needs a Python toolchain, and the SDPA kernel below follows trifast's build rather than being run as
 > part of `SDPAOps`. Treat the Triton kernel as a starting point and test it (`record_bindings`,
-> comparison with the host path) before relying on it.
+> comparison with the host path) before relying on it. Part B is run by the test suite, from committed fixtures.
 
-## The toolchain
+### The toolchain
 
 - An Apple-silicon Mac, macOS 14 or later, with the Xcode command-line tools. On macOS 26 the Metal
   compiler is a separate component: if `xcrun metal --version` reports it missing, run
@@ -32,7 +60,7 @@ uv pip install "https://github.com/bledden/triton-msl/releases/download/triton-w
 uv pip install triton-msl            # or: uv pip install -e path/to/triton-msl
 ```
 
-## Writing the kernel for a Julia caller
+### Writing the kernel for a Julia caller
 
 A Triton kernel compiled for KernelDispatch is called with Julia's arrays, so it has to follow the
 conventions of the binary it becomes.
@@ -90,7 +118,7 @@ def sdpa_fwd(q_ptr, k_ptr, v_ptr, o_ptr, N, M, D, DV, scale,
 It avoids `tl.dot`. triton-msl requires every dimension of a `tl.dot` tile to be at least 32, too
 large for this example's head dims; a production kernel with larger tiles would use it.
 
-## Compiling to a `.metallib`
+### Compiling to a `.metallib`
 
 Ahead of time, through Triton's compiler with triton-msl's target, as `trifast.metal.build` does:
 
@@ -155,7 +183,7 @@ What to take from each line:
   tile exceeds that is lowered through a multi-element-per-thread loop, which trifast found
   mis-compiles some constructs. trifast refuses to build past it by default.
 
-## Registering it in Julia
+### Registering it in Julia
 
 The result is a binary like any other. Here as a third kernel of `SDPAOps`' op, sharing the Metal
 kernel's argument order:
@@ -212,7 +240,7 @@ julia> map(first, only(KernelDispatch.record_bindings(() -> SDPA()(q, k, v))).sl
 julia> Array(SDPA()(q, k, v)) ≈ SDPA()(Array(q), Array(k), Array(v))
 ```
 
-## In practice: trifast
+### In practice: trifast
 
 `trifast.metal.build(dim=32)` applies all of this to four kernels (a forward and a three-way
 backward), and writes the metallibs plus a JSON descriptor with each kernel's threadgroup, buffer
@@ -234,3 +262,141 @@ Its `forward` launches `:fwd`, and its `backward` launches `:dq`, `:dkv` and `:d
 `trifast/src/trifast/triton-metal.py`, documents the changes a CUDA Triton kernel needed for this:
 reading Julia's column-major arrays in place, deriving strides instead of passing them, and taking its
 arguments in the order the Julia side binds them.
+
+## B. NVIDIA: a Triton `.cubin`
+
+Triton's own backend produces a `.cubin` (machine code for one architecture) and a `.ptx` (portable text) for NVIDIA, and
+writes a metadata JSON beside them (`<name>.json`). [`triton_binary`](@ref) turns that JSON into a
+[`KernelBinary`](@ref); nothing needs compiling on the Julia side. The [Backends](../backends.md#Triton-on-CUDA) page
+describes how CUDA launches such a binary, eagerly and traced.
+
+### The toolchain
+
+An NVIDIA GPU, Python with `triton` and a CUDA build of `torch` (Triton launches the kernel once to compile it; torch
+allocates the arrays for that launch). This part is tested with Triton **3.8.0** on Python 3.10 and an sm_86 GPU (an A40).
+Other Triton versions have not been tried and may write different metadata or declare a different number of hidden
+parameters.
+
+### Writing the kernel for a Julia caller
+
+Julia arrays are column-major, and a Triton kernel can follow either of two conventions:
+
+- **Write it for Julia's layout**, as in part A: element `(r, c)` of a `rows×cols` matrix is at `c * rows + r`.
+- **Keep a PyTorch-style kernel and hand Julia the same memory with the dimensions reversed.** A torch tensor of shape
+  `(bh, n, n, d)` and a Julia array of size `(d, n, n, bh)` are the same bytes, so a kernel that takes torch's strides as
+  arguments works unchanged. This is how trifast's CUDA kernels run here: the strides are integer arguments, computed
+  from the torch shape.
+
+Either way the scalars are `Int32` for Python ints and `Float32` for Python floats. (Triton compiles an integer above
+2^31 as 64-bit; that case has not been tested here.) The smallest example, used by the test suite, is:
+
+```python
+# scale_kernel.py
+import triton
+import triton.language as tl
+
+@triton.jit
+def scale_kernel(x_ptr, y_ptr, a, n, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n
+    x = tl.load(x_ptr + offs, mask=mask)
+    tl.store(y_ptr + offs, a * x, mask=mask)
+```
+
+### Compiling and collecting the files
+
+Compile ahead, into a directory you control (the snippet is a sketch of what the fixture script does). Launch the kernel once from Python with `TRITON_CACHE_DIR` pointing at a
+fresh directory, then copy `<name>.cubin`, `<name>.ptx` and `<name>.json` out of the `<hash>/` directory Triton made in it.
+(Triton's default JIT cache holds the same files under opaque hash directories that Triton may rewrite or clear, so it is not
+a place to read from at run time.) `test/fixtures/make_triton_fixture.py` does exactly this for a few small kernels.
+
+```python
+import os, tempfile, glob, shutil
+os.environ["TRITON_CACHE_DIR"] = tempfile.mkdtemp()          # before importing triton
+os.makedirs("kernels", exist_ok=True)
+import torch, triton
+from scale_kernel import scale_kernel
+
+x, y = torch.randn(100, device="cuda"), torch.zeros(100, device="cuda")
+scale_kernel[(triton.cdiv(100, 64),)](x, y, 2.0, 100, BLOCK=64, num_warps=2)
+for f in glob.glob(os.path.join(os.environ["TRITON_CACHE_DIR"], "**", "scale_kernel.*"), recursive=True):
+    if f.endswith((".cubin", ".ptx", ".json")):
+        shutil.copy(f, "kernels/")
+```
+
+A binary is one *configuration*: the block sizes, `num_warps` and `num_stages` it was compiled with. For a kernel wrapped
+in an autotuner (trifast's), launch the `JITFunction` underneath with an explicit configuration, once per configuration you
+want to ship; `test/fixtures/make_trifast_fixture.py` does that for trifast's four kernels.
+
+### Registering it
+
+```julia
+bin = triton_binary("kernels/scale_kernel.json")        # scale_kernel.cubin beside it; PTX if there is no cubin
+add_variant!(op, kernel, (:Float32,); fwd=bin)
+```
+
+It reads the kernel's `entry`, `threadgroup` (`num_warps * 32`), `shared_mem` (the dynamic shared memory Triton asked for,
+raised past the default 48 KB for you), the architecture a cubin was built for (checked against the device on every launch)
+and how many hidden trailing pointer parameters the compiled kernel takes (`abi = :triton` makes the launcher pass them as
+null pointers, eagerly and traced). `tile` defaults to `1`: `extent` is the grid of programs.
+
+### Calling it
+
+The arguments are the compiled signature, in order: `x_ptr`, `y_ptr`, `a`, `n` (`BLOCK` is a constexpr and is dropped):
+
+```julia
+y, = run_binary(bin, x, OutArray(Float32, 100), 2.0f0, Int32(100); extent=cld(100, 64))    # eager, on CuArrays
+```
+
+and the same call, with traced arrays, under `@jit`. From an op, `forward` calls `call_binary(op, kernel, :fwd, args...;
+extent=...)` instead, and nothing about it is specific to Triton. The buffer order is the kernel's own: a kernel with its
+output first or between other arguments works, because a traced launch passes each output as an aliased operand in its
+position.
+
+!!! note "Calling `run_binary` from inside a trace"
+    A `KernelBinary` captured by a traced function is not traceable. Build it inside the function (from its file and
+    fields) or look it up with `call_binary`, which does that inside the trace.
+
+### What is the caller's job
+
+The compiled signature is what counts, and Triton changes it:
+
+- **Pass exactly the arguments the compiled kernel declares.** Triton removes `constexpr` arguments from the signature and
+  integers equal to 1 (a stride of a contiguous array), so the `forward` must not bind them. For trifast's `_fwd` with
+  contiguous inputs, four constexprs and seven strides equal to 1 are dropped from its forty Python parameters, leaving 29. `test/triton_fixtures.jl` has `ptx_param_kinds`, which lists the parameters of
+  the PTX entry to compare with. Nothing checks this at launch yet.
+- **A binary is valid only for the specialisation it was compiled for.** Triton also compiles integers and pointers
+  divisible by 16 in as such. For trifast's `_fwd`, sequence lengths 33, 40 and 41 shared one binary and 48 and 64
+  another. Register one binary per class, and put the class in the variant key; a launch outside it is not checked and can
+  compute wrongly.
+- **No clusters or scratch memory.** `triton_binary` refuses `num_ctas > 1` and a nonzero `global_scratch_size`, with the
+  reason.
+
+### Kernels that update an array
+
+A kernel that reads and then updates an output (`y += a * x`) takes that array as an [`InOutArray`](@ref):
+
+```julia
+y = run_binary(bin, InOutArray(y), x, 0.5f0, Int32(100); extent=cld(100, 64)) |> only
+```
+
+Eagerly the kernel writes `y` itself; in a trace the launch starts from `y`'s values and returns the updated array, and `y`
+itself is unchanged. A plain [`OutArray`](@ref) starts from zeros (also in a trace), which is what a kernel that fills its
+output, or accumulates atomically into a zeroed one, expects. `InOutArray` is not available in a Metal trace.
+
+### In practice: trifast on CUDA
+
+trifast's four triangle-attention kernels (`_fwd`, and the three backward kernels `_bwd_q`, `_bwd_kv`, `_bwd_b`) are the
+largest test here. They use `tl.dot`, a three-dimensional grid `(cld(n, BLOCK_J), n, batch·heads)`, between 29 and 40
+arguments each (a dozen strides per kernel), a Bool mask, outputs first or last, and dynamic shared memory up to 57 KB. The
+test suite launches each at several configurations, cubin and PTX, eagerly and from `@jit`, and compares them with Triton's
+own output and a float64 torch reference; it also chains the four (the backward kernels read what the forward and `_bwd_q`
+wrote) in one traced program. All of that is in `test/ext/cuda/trifast.test.jl`, driven by a description of each call that
+`make_trifast_fixture.py` writes (`test/fixtures/trifast/case.json`: the grid and the compiled argument list).
+
+### What is and is not validated
+
+Tested on an NVIDIA A40 with Triton 3.8.0: small kernels (shared memory, a dropped argument, an output first), a
+read-modify-write and an atomic accumulation, and trifast's four kernels (Float32), all eager and traced. Not covered:
+other Triton versions and GPUs, Float16/BFloat16, differentiation through the kernels, autotuning, and performance.

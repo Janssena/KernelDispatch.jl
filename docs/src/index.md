@@ -19,13 +19,25 @@ any other.
 
 The [tutorials](tutorials/1-switching-kernels.md) walk through a complete example: switching kernels and
 persisting defaults, registering a compiled binary or a KA kernel, custom `forward`/`backward` with Enzyme
-gradients, and compiling a Triton kernel to a `.metallib`. Every exported and public name is documented in
+gradients, and compiling a Triton kernel to a `.metallib` or a `.cubin`. Every exported and public name is documented in
 the [API reference](api.md).
 
-**Backends.** Metal runs prebuilt `.metallib` binaries and KernelAbstractions kernels (compiled to `.metallib`);
-CUDA runs KernelAbstractions kernels (compiled to `.cubin`) once `CUDA.jl` is loaded. A prebuilt `.metallib` is
-Metal-only, so an op that ships one (like the `FlashAttn` kernel of the examples) needs a KA kernel to run on CUDA.
-Traced (Reactant) launches are Metal-only for now.
+**Backends.** Metal runs prebuilt `.metallib` binaries and KernelAbstractions kernels (compiled to `.metallib`); CUDA
+runs prebuilt `.cubin` / `.ptx` files, KernelAbstractions kernels (compiled to `.cubin`) and kernels compiled by Triton
+(`triton_binary`), once `CUDA.jl` is loaded. A prebuilt `.metallib` is Metal-only, so an op that ships one (like the
+`FlashAttn` kernel of the examples) needs a KA kernel to run on CUDA. Under Reactant a binary is embedded as a
+`stablehlo.custom_call`: on Metal through jax-mps, on CUDA through XLA's `triton_kernel_call_ffi` handler. CUDA's KA
+binaries are built without CUDA.jl's kernel state, so the same file launches eagerly and from a trace; the price is
+that such a kernel must not be able to throw. A kernel's buffers may come in any order, and a kernel that updates an
+array in place takes it as an [`InOutArray`](@ref).
+
+**What is tested.** Metal (eager and traced) on Apple silicon. CUDA on one NVIDIA A40 (sm_86): prebuilt, KA and Triton
+binaries, eager and traced, including kernels compiled by Triton 3.8.0 (small test kernels and
+[trifast](https://github.com/latkins/trifast)'s four triangle-attention kernels, checked against torch). **Everything is
+tested in Float32 only**; Float16 and BFloat16 are not tested yet. ROCm is not implemented. A Triton
+binary is compiled for the specialisation of the arguments it was first launched with (integers equal to 1 or divisible
+by 16), so a registered one serves only launches in the same class. See the [Backends](backends.md) page for the
+matrix and the limits.
 
 ## Concepts
 
@@ -34,7 +46,7 @@ Traced (Reactant) launches are Metal-only for now.
 | **op** | an operation: `SDPA <: AbstractKernelOp` | [`host`](@ref), [`@default_kernel`](@ref) |
 | **kernel** | one implementation: `Trifast <: AbstractKernel` | [`forward`](@ref) (builds the binary's arguments), optionally [`backward`](@ref), [`variant_key`](@ref), [`extras`](@ref), [`nearest`](@ref), [`build!`](@ref), [`source_tag`](@ref) |
 | **variant** | one (tuned) build of a kernel for a class of inputs: launch name → `KernelBinary` | [`add_variant!`](@ref) |
-| **[`KernelBinary`](@ref)** | one compiled launch: file, entry point, `threadgroup`, `tile`, tuning `params`, `is_ka` | — |
+| **[`KernelBinary`](@ref)** | one compiled launch: file, entry point, `threadgroup`, `tile`, tuning `params`, `abi`, `target`, `shared_mem` | — ([`ka_compile`](@ref) and [`triton_binary`](@ref) make them) |
 
 Ops and kernels are fieldless singletons; behaviour comes from dispatch. Which kernel is *selected* is a
 method, so an op call is type-stable.
@@ -89,6 +101,18 @@ use_kernel!(SDPA(), SDPAKA())                             # this session, from t
 SDPA()(q, k, v)                                           # runs the KA kernel
 forward(SDPA(), FlashAttn(), q, k, v)                     # one call with a given kernel: no global switch
 ```
+
+The example is Metal; on CUDA only the binary and the array type change. A `.cubin` (built for one architecture, which
+`target` records and the launch checks) or a portable `.ptx` takes the place of the `.metallib`, and the arrays are
+`CuArray`s:
+
+```julia
+add_variant!(SDPA(), FlashAttn(); fwd = KernelBinary("flash.cubin"; entry="sdpa_fwd", threadgroup=64, target="sm_86"))
+```
+
+A prebuilt binary belongs to one backend, so an op that must run on both ships one for each, or a KernelAbstractions
+kernel, which is compiled for whichever backend is loaded. [Tutorial 2](tutorials/2-registering-kernels.md) shows both
+backends side by side.
 
 A KernelAbstractions kernel joins the op the same way, with its own `forward` and a binary from
 [`ka_compile`](@ref) instead of a file; see [tutorial 2](tutorials/2-registering-kernels.md).
