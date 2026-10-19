@@ -35,14 +35,13 @@ struct InOutArray{A<:AbstractArray}
     array::A
 end
 
-# The first argument that is an array (an `InOutArray` counts as its array): it decides the backend.
-function _first_array(xs)
-    for x in xs
-        x isa AbstractArray && return x
-        x isa InOutArray && return x.array
-    end
-    return nothing
-end
+# The first argument that is an array (an `InOutArray` counts as its array): it decides the backend. Recursive over the
+# argument tuple, so the result type infers (a loop over a heterogeneous tuple would not).
+_first_array(xs::Tuple) = _first_array_(xs...)
+_first_array_() = nothing
+_first_array_(x::AbstractArray, rest...) = x
+_first_array_(x::InOutArray, rest...) = x.array
+_first_array_(x, rest...) = _first_array_(rest...)
 
 """
     (op::AbstractKernelOp)(args...)
