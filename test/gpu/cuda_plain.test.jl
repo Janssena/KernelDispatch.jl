@@ -1,5 +1,5 @@
-# Plain binaries on CUDA: a pointer-and-scalar kernel (hand-written PTX, assembled to a cubin), launched
-# eagerly and, through XLA's kernel-call handler, from a Reactant trace. Plain binaries are the ones that
+# `:explicit` binaries on CUDA: a pointer-and-scalar kernel (hand-written PTX, assembled to a cubin), launched
+# eagerly and, through XLA's kernel-call handler, from a Reactant trace. `:explicit` binaries are the ones that
 # can be traced: a KernelAbstractions binary takes struct arguments the handler cannot pass (asserted
 # below). CUDA only; the Metal equivalent is gpu/reactant.test.jl.
 #

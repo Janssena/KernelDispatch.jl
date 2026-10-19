@@ -1,6 +1,6 @@
 # Type stability, the part that needs no device: the small routing/constructor functions on the call
 # path must infer concretely. (The launch paths, which need a device, are in gpu/inference.test.jl.)
-# The op is SDPAOps: `FlashAttn` is a plain binary, `SDPAKA` a KA binary with `extras`.
+# The op is SDPAOps: `FlashAttn` is an `:explicit` binary, `SDPAKA` a KA binary with `extras`.
 
 using Test, KernelDispatch, SDPAOps
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))

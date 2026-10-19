@@ -91,7 +91,7 @@ has_gpu || !any(gpu, GPU_SECTIONS) || @warn "the GPU section is skipped: no usab
                 include("gpu/reactant.test.jl")
             end
 
-            gpu("cuda_plain") && GPU === :cuda && @testset "plain CUDA binaries, eager and traced" begin
+            gpu("cuda_plain") && GPU === :cuda && @testset "explicit CUDA binaries, eager and traced" begin
                 include("gpu/cuda_plain.test.jl")
             end
         end

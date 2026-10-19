@@ -1,4 +1,4 @@
-// The plain-ABI kernel of the conformance suite (test/gpu/conformance.test.jl): y[i] = a * x[i] for i < n.
+// The `:explicit`-ABI kernel of the conformance suite (test/gpu/conformance.test.jl): y[i] = a * x[i] for i < n.
 // Buffers, then scalars, in the order the caller binds them (a scalar is a one-element buffer). Compile with
 //
 //     xcrun -sdk macosx metal scale.metal -o scale.metallib

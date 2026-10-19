@@ -28,11 +28,11 @@
 using Random, KernelDispatch, KernelAbstractions, CUDA
 
 const KA = KernelAbstractions
-const KO = KernelDispatch
+const KD = KernelDispatch
 const CUDACore = CUDA.CUDACore
 const GPUC = CUDACore.GPUCompiler
-const EXT = Base.get_extension(KO, :KernelDispatchCUDAExt)
-const TAG = KO.CUDABackendTag()
+const EXT = Base.get_extension(KD, :KernelDispatchCUDAExt)
+const TAG = KD.CUDABackendTag()
 
 const RESULTS = Pair{String,Bool}[]
 function stage(f, name)
@@ -51,7 +51,7 @@ end
 check(cond, msg="check failed") = cond || error(msg)
 
 println("Julia ", VERSION, " on ", Sys.MACHINE)
-println("CUDA.jl ", pkgversion(CUDA), ", GPUCompiler ", pkgversion(GPUC), ", KernelDispatch ", pkgversion(KO))
+println("CUDA.jl ", pkgversion(CUDA), ", GPUCompiler ", pkgversion(GPUC), ", KernelDispatch ", pkgversion(KD))
 if CUDA.functional()
     dev = CUDA.device()
     println("device: ", CUDA.name(dev), ", compute capability ", CUDA.capability(dev))
@@ -93,7 +93,7 @@ function cubin_of(ftype::Type, sig::Type; name, config=nothing)
     dir = mktempdir()
     ptx_file, cubin_file = joinpath(dir, name * ".ptx"), joinpath(dir, name * ".cubin")
     write(ptx_file, ptx)
-    run(`$(CUDACore.CUDA_Compiler.ptxas()) --gpu-name $(KO.target_id(TAG)) --output-file $cubin_file $ptx_file`)
+    run(`$(CUDACore.CUDA_Compiler.ptxas()) --gpu-name $(KD.target_id(TAG)) --output-file $cubin_file $ptx_file`)
     return read(cubin_file), String(entry)
 end
 
@@ -116,12 +116,12 @@ function show_params(title, ptx)
 end
 
 # The real KA kernel body, as a type: the wrapper calls its singleton instance.
-const KOBJ = probe_scale!(CUDABackend(), TG)
-const F = typeof(KOBJ.f)
+const KDBJ = probe_scale!(CUDABackend(), TG)
+const F = typeof(KDBJ.f)
 
 # KA's launch context for a static workgroup size is six integers (stage 1: 48 bytes): the ND-range and the
 # block counts, as two `CartesianIndices`. Rebuilt here from them directly, with none of `KA.launch_config` /
-# `partition` (those have error paths, which a device cannot compile). Equal to `KO.ka_context`'s (stage 2.0).
+# `partition` (those have error paths, which a device cannot compile). Equal to `KD.ka_context`'s (stage 2.0).
 @inline function rebuild_ctx(::Val{TG}, nd1::Int, nd2::Int, nd3::Int, b1::Int, b2::Int, b3::Int) where {TG}
     ND = KA.NDIteration
     iterspace = ND.NDRange{3,ND.DynamicSize,ND.StaticSize{(TG, 1, 1)}}(CartesianIndices((b1, b2, b3)), nothing)
@@ -141,7 +141,7 @@ end
 const FLAT = Flat{F,TG}
 const FLAT_SIG = Tuple{Int,Int,Int,Int,Int,Int,EXT.dptr(Float32),EXT.dptr(Float32),Float32,Int32}
 
-# The six integers `KO.ka_context` would put in the context, for `groups` threadgroups.
+# The six integers `KD.ka_context` would put in the context, for `groups` threadgroups.
 flat_ints(groups::NTuple{3,Int}) = (groups[1] * TG, groups[2], groups[3], groups[1], groups[2], groups[3])
 
 # A job whose compiler does not add CUDA.jl's hidden `KernelState` first parameter.
@@ -158,7 +158,7 @@ end
 # --- 1: what the handler would have to pass --------------------------------------------------------------------
 
 stage("1 signature of a KA binary (what ka_compile builds)") do
-    ctx, ghost = KO.ka_context(TAG, (2, 1, 1), TG)
+    ctx, ghost = KD.ka_context(TAG, (2, 1, 1), TG)
     println("\n   KernelState: ", sizeof(CUDACore.KernelState), " bytes; KA context: ", sizeof(ctx),
         " bytes, ghost=", ghost, "\n   context type: ", typeof(ctx))
     sig = Tuple{typeof(ctx),map(EXT._ka_argtype, ARGT)...}
@@ -178,7 +178,7 @@ end
 
 stage("2.0 the rebuilt context equals KA's (host only)") do
     for groups in ((2, 1, 1), (3, 2, 1), (1, 1, 4))
-        ref, _ = KO.ka_context(TAG, groups, TG)
+        ref, _ = KD.ka_context(TAG, groups, TG)
         new = rebuild_ctx(Val(TG), flat_ints(groups)...)
         check(typeof(new) === typeof(ref), "types differ:\n  $(typeof(new))\n  $(typeof(ref))")
         bits(c) = (r = Ref(c); GC.@preserve r unsafe_load(Ptr{NTuple{6,Int}}(Base.unsafe_convert(Ptr{Cvoid}, r))))

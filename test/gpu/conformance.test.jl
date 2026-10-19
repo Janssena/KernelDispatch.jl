@@ -1,4 +1,4 @@
-# What any backend must do for a plain-ABI binary: the same checks against whichever backend is loaded
+# What any backend must do for an `:explicit`-ABI binary: the same checks against whichever backend is loaded
 # (Metal's `scale.metallib` fixture, CUDA's PTX/cubin from test/cuda_ptx.jl), through the public launch API.
 # A new backend is complete when it passes this file. The kernel is `scale(x, y, a, n)`: y[i] = a * x[i].
 # KA binaries, Enzyme and the ops have their own tests; this is the contract a backend extension implements.
@@ -9,7 +9,7 @@ Sys.isapple() && (isdefined(@__MODULE__, :mps_client) || include(joinpath(@__DIR
 
 const KB = KernelDispatch
 
-"The backend's plain `scale` binaries, as `label => KernelBinary`."
+"The backend's `:explicit` `scale` binaries, as `label => KernelBinary`."
 function conformance_binaries(dir)
     if GPU === :metal
         file = joinpath(dir, "scale.metallib")

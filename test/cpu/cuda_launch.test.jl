@@ -158,9 +158,9 @@ end
     # CUDA's KA binaries take no struct arguments (no KernelState, the context as six integers), so XLA's
     # kernel-call handler can launch them: nothing is refused up front, and the six integers have a byte form.
     ka = KernelBinary("k.cubin"; entry="k", threadgroup=64, abi=:ka)
-    plain = KernelBinary("k.cubin"; entry="k", threadgroup=64)
+    explicit = KernelBinary("k.cubin"; entry="k", threadgroup=64)
     triton = KernelBinary("k.cubin"; entry="k", threadgroup=64, abi=:triton)
-    for b in (ka, plain, triton), tag in (KernelDispatch.CUDABackendTag(), KernelDispatch.MetalBackendTag())
+    for b in (ka, explicit, triton), tag in (KernelDispatch.CUDABackendTag(), KernelDispatch.MetalBackendTag())
         @test KernelDispatch.traced_support(tag, b) === nothing
     end
     @test RXC._le_bytes(2 * 64) == "[128,0,0,0,0,0,0,0]"

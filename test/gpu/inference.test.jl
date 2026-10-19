@@ -1,6 +1,6 @@
 # Type stability on the device: routing on the backend's arrays, the KA hooks, and the launch paths.
 # `@inferred` alone for launches (a second run would dispatch a second kernel); `@test_nowarn` where a
-# warning is the failure. The op is SDPAOps: `FlashAttn` is a plain (prebuilt, Metal-only) binary,
+# warning is the failure. The op is SDPAOps: `FlashAttn` is an `:explicit` (prebuilt, Metal-only) binary,
 # `SDPAKA` a KA binary with `extras`. The device-free half is in cpu/inference.test.jl.
 
 using Test, KernelDispatch, SDPAOps, KernelAbstractions
@@ -71,7 +71,7 @@ end
     end
 end
 
-# The binary-level layers, for a KA-compiled binary (Vector{Any} prelude, flat grid) and, on Metal, a plain
+# The binary-level layers, for a KA-compiled binary (Vector{Any} prelude, flat grid) and, on Metal, an `:explicit`
 # one: the `Launch` keeps the argument types, so running and timing it infer.
 @testset "Launch path" begin
     d, n, m, dv = 16, 300, 6, 4

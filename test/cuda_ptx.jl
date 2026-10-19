@@ -1,5 +1,5 @@
-# A plain CUDA kernel binary for the tests and the probe: hand-written PTX with a pointer-and-scalar
-# signature, assembled to a cubin with the `ptxas` that CUDA.jl ships. "Plain" is the point: unlike a
+# An `:explicit` CUDA kernel binary for the tests and the probe: hand-written PTX with a pointer-and-scalar
+# signature, assembled to a cubin with the `ptxas` that CUDA.jl ships. "Explicit" is the point: unlike a
 # KernelAbstractions kernel (CUDA.jl's `KernelState` and KA's context are struct arguments) it can be
 # launched from a trace, and unlike a Julia kernel it needs no GPUCompiler. Needs the CUDA module as `GPU_PKG`
 # (gpu_backend.jl defines it; a script that does `using CUDA` sets `const GPU_PKG = CUDA`).
@@ -50,7 +50,7 @@ DONE:
 """
     scale_binaries(dir) -> (ptx=KernelBinary, cubin=KernelBinary)
 
-Write `SCALE_PTX` into `dir` and assemble it for the current device. Both are plain binaries (`is_ka=false`)
+Write `SCALE_PTX` into `dir` and assemble it for the current device. Both are `:explicit` binaries
 for the kernel `scale`, 64 threads per block, one item per thread.
 """
 function scale_binaries(dir::AbstractString; threadgroup=64)

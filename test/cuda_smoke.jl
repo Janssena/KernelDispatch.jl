@@ -20,7 +20,7 @@ include(joinpath(@__DIR__, "fixtures.jl"))
 include(joinpath(@__DIR__, "sdpa_helpers.jl"))
 include(joinpath(@__DIR__, "cuda_ptx.jl"))
 
-const KO = KernelDispatch
+const KD = KernelDispatch
 const EXT = Base.get_extension(KernelDispatch, :KernelDispatchCUDAExt)
 
 const RESULTS = Pair{String,Bool}[]
@@ -54,37 +54,37 @@ end
 
 stage("1 backend registered") do
     check(EXT !== nothing, "the KernelDispatchCUDAExt extension did not load")
-    check(KO.device_available(), "device_available() is false although CUDA is functional")
-    check(KO.device_backend() isa KO.CUDABackendTag, "device_backend() is $(KO.device_backend())")
+    check(KD.device_available(), "device_available() is false although CUDA is functional")
+    check(KD.device_backend() isa KD.CUDABackendTag, "device_backend() is $(KD.device_backend())")
 end
 
-const TAG = KO.CUDABackendTag()
+const TAG = KD.CUDABackendTag()
 rng = Xoshiro(1)
 
 stage("2 array routing") do
     x = CuArray(rand(rng, Float32, 4, 6))
-    check(KO.backend_of(x) === TAG)
-    check(KO.device_dense(TAG, x) === x)
+    check(KD.backend_of(x) === TAG)
+    check(KD.device_dense(TAG, x) === x)
     contiguous = view(x, :, 2:3)                               # CUDA.jl returns a CuArray here
-    check(KO.backend_of(contiguous) === TAG)
+    check(KD.backend_of(contiguous) === TAG)
     for w in (view(x, 2:3, :), x', transpose(x))              # these stay wrappers
         check(w isa EXT.WrappedCuArray, "$(typeof(w)) is not a WrappedCuArray")
-        d = KO.device_dense(TAG, w)
+        d = KD.device_dense(TAG, w)
         check(d isa CuArray && Array(d) == Array(w), "device_dense of $(typeof(w)) is wrong")
     end
 end
 
 stage("3 KA context and prelude") do
-    words = KO.ka_state_words(TAG)
+    words = KD.ka_state_words(TAG)
     println("\n   state words: ", map(typeof, words))
     check(words === (), "a flat KA binary takes no kernel state, got $words")
-    ctx, ghost = KO.ka_context(TAG, (2, 1, 1), 64)
+    ctx, ghost = KD.ka_context(TAG, (2, 1, 1), 64)
     println("   ctx: ", sizeof(ctx), " bytes, ghost=", ghost)
-    prelude = KO.ka_prelude(TAG, ctx, ghost)
+    prelude = KD.ka_prelude(TAG, ctx, ghost)
     println("   prelude: ", prelude)
     check(prelude == Any[128, 1, 1, 2, 1, 1], "the flat prelude is the ND-range and the block counts, got $prelude")
-    check(KO.ka_grid(TAG, (2, 3, 4)) === (24, 1, 1))
-    check(KO.ka_backend_object(TAG) isa CUDABackend)
+    check(KD.ka_grid(TAG, (2, 3, 4)) === (24, 1, 1))
+    check(KD.ka_backend_object(TAG) isa CUDABackend)
 end
 
 LS = nothing
@@ -98,10 +98,10 @@ stage("4 ka_compile -> .cubin") do
 end
 
 stage("5 load + thread limit") do
-    lim = KO.max_threads(LS)
+    lim = KD.max_threads(LS)
     println("\n   max threads for the function: ", lim)
     check(LS_TG <= lim <= 1024)
-    check(lim == KO.max_threads(TAG, LS) == KO.max_threads(LS; backend=TAG))
+    check(lim == KD.max_threads(TAG, LS) == KD.max_threads(LS; backend=TAG))
 end
 
 stage("6 run_binary vs host") do
@@ -140,7 +140,7 @@ stage("9 Residual forward/backward binaries and the Enzyme rule") do
     xd, yd = CuArray(x), CuArray(y)
     z = Residual()(xd, yd, 3.0f0)
     check(z isa CuArray && Array(z) ≈ 3 .* x .+ y, "forward")
-    dx, dy, da = KO.backward(Residual(), ResidualKA(), (xd, yd, 3.0f0), z, CuArray(dz))
+    dx, dy, da = KD.backward(Residual(), ResidualKA(), (xd, yd, 3.0f0), z, CuArray(dz))
     check(Array(dx) ≈ 3 .* dz && Array(dy) ≈ dz && da === nothing, "backward binary")
     f(x, y, a) = Residual()(x, y, a)
     gx, gy = zero(xd), zero(yd)
@@ -156,7 +156,7 @@ end
 stage("10 SDPAOps, KernelAbstractions kernel") do
     for (d, n, m, dv) in SDPA_SIZES
         q, k, v = inputs(rng, d, n, m, dv)
-        o = KO.forward(SDPA(), SDPAKA(), CuArray(q), CuArray(k), CuArray(v))
+        o = KD.forward(SDPA(), SDPAKA(), CuArray(q), CuArray(k), CuArray(v))
         check(o isa CuArray && size(o) == (dv, n))
         check(isapprox(Array(o), sdpa_reference(q, k, v); rtol=1e-3), "wrong values for (d,n,m,dv)=$((d, n, m, dv))")
     end
@@ -171,7 +171,7 @@ stage("11 launch-size checks") do
     check(try; prepare_launch(LS, a()...); false; catch e; e isa ArgumentError; end, "no extent")
 end
 
-stage("12 plain binaries: .cubin and .ptx, eager") do
+stage("12 explicit binaries: .cubin and .ptx, eager") do
     bins = scale_binaries(mktempdir())
     for (kind, bin) in pairs(bins), n in (1, 100, 1000)
         x = randn(rng, Float32, n)
@@ -186,7 +186,7 @@ stage("12 plain binaries: .cubin and .ptx, eager") do
 end
 
 stage("13 target architecture") do
-    dev = KO.target_id(TAG)
+    dev = KD.target_id(TAG)
     println("\n   device target: ", dev, "; ka_compile recorded: ", LS.target)
     check(occursin(r"^sm_\d+$", dev) && LS.target == dev, "ka_compile did not record the device's target")
     bins = scale_binaries(mktempdir())
