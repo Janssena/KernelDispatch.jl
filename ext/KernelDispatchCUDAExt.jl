@@ -1,23 +1,8 @@
 module KernelDispatchCUDAExt
 
-# CUDA's half of KernelDispatch, the counterpart of KernelDispatchMetalExt: binding arguments to a compiled
-# `.cubin` and launching it (the eager `execute` every `call_binary` / `run_binary` ends in), and
-# ahead-of-time compilation of KernelAbstractions kernels.
-#
-# Written against CUDA.jl 6 (CUDACore). The pieces that depend on CUDA.jl / GPUCompiler internals are kept
-# in a few small functions so a version difference is a local fix:
-#
-#   `_compile_cubin`   flat KA wrapper + argument types -> cubin    (GPUCompiler job, then `ptxas`)
-#   `_function`        cubin file -> `CuFunction`, cached           (`CuModule`)
-#   `_launch`          one launch of a `CuFunction`                 (`cudacall`)
-#
-# KernelAbstractions binaries are built FLAT: without CUDA.jl's hidden `KernelState` argument, and with KA's
-# launch context passed as the six integers it consists of. Everything such a binary takes is then a device pointer
-# or a plain scalar, so one file launches eagerly and from a Reactant trace (XLA's kernel-call handler passes
-# nothing else). The cost is that a kernel whose compiled code can still throw cannot be built: reporting an
-# exception needs that state.
-#
-# `JULIA_DEBUG=KernelDispatchCUDAExt` logs the entry point, image size and launch geometry.
+# CUDA's half of KernelDispatch: binding arguments to a compiled `.cubin` and launching it (the eager 
+# `execute` every `call_binary` / `run_binary` ends in), and ahead-of-time compilation of 
+# KernelAbstractions kernels.
 #
 # Binary formats: `.cubin` (machine code for one architecture, what `ka_compile` writes) and `.ptx` (text the
 # driver compiles when the module loads, so it runs on any newer device). Any other file is refused with an
@@ -28,13 +13,11 @@ using CUDA: CUDACore
 using KernelAbstractions
 using KernelDispatch
 
-const KO = KernelDispatch
+const KD = KernelDispatch
 const KA = KernelAbstractions
 const GPUCompiler = CUDACore.GPUCompiler
 
 dptr(::Type{T}) where {T} = Core.LLVMPtr{T,CUDACore.AS.Global}
-
-# --- loading ----------------------------------------------------------------------------------------
 
 const IMAGE_EXTENSIONS = (".cubin", ".ptx")
 
@@ -42,9 +25,11 @@ const IMAGE_EXTENSIONS = (".cubin", ".ptx")
 function _image(path::AbstractString)
     ext = lowercase(splitext(path)[2])
     ext in IMAGE_EXTENSIONS || throw(ArgumentError(
-        "CUDA binary `$path`: expected a .cubin (machine code) or .ptx (text the driver compiles), not `$ext`"))
+        "CUDA binary `$path`: expected a .cubin (machine code) or .ptx (text the driver compiles), not `$ext`"
+    ))
     image = read(path)
     ext == ".ptx" && push!(image, 0x00)
+
     return image
 end
 
@@ -64,21 +49,21 @@ end
 
 # The compiled function's own threads-per-block ceiling: what its register use leaves of the
 # device's. Launching over it fails with an invalid-configuration error, so launches refuse it first.
-function _limit(b::KO.KernelBinary)
+function _limit(b::KD.KernelBinary)
     f = _function(b.file, b.entry)
     return Int(CUDACore.attributes(f)[CUDACore.FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK])
 end
 
-KO.max_threads(::KO.CUDABackendTag, b::KO.KernelBinary) = _limit(b)
+KD.max_threads(::KD.CUDABackendTag, b::KD.KernelBinary) = _limit(b)
 
-function _check_limit(b::KO.KernelBinary)
+function _check_limit(b::KD.KernelBinary)
     lim = _limit(b)
     b.threadgroup <= lim || throw(ArgumentError(
-        "threadgroup $(b.threadgroup) exceeds this kernel's limit of $lim threads per block"))
+        "threadgroup $(b.threadgroup) exceeds this kernel's limit of $lim threads per block"
+    ))
+
     return nothing
 end
-
-# --- launching --------------------------------------------------------------------------------------
 
 # A device array is passed as its raw device pointer (offset included, so a view works); every other
 # slot is a bits value passed by value (a flat KA binary's context integers included).
@@ -100,17 +85,23 @@ end
 
 # One launch of `b`: its function, its dynamic shared memory, and (for a Triton binary) the hidden trailing null
 # pointers its compiled signature ends with, after the slots.
-function _launch(b::KO.KernelBinary, slots, grid::NTuple{3,Int})
+function _launch(b::KD.KernelBinary, slots, grid::NTuple{3,Int})
     f = _function(b.file, b.entry)
-    args = (map(_arg, slots)..., ntuple(_ -> CUDACore.CuPtr{Cvoid}(0), KO.trailing_pointers(b))...)
+    args = (
+        map(_arg, slots)..., 
+        ntuple(Returns(CUDACore.CuPtr{Cvoid}(0)), KD.trailing_pointers(b))...
+    )
     _allow_shared(f, b.shared_mem)
     @debug "launching CUDA kernel" blocks = grid threads = b.threadgroup shmem = b.shared_mem nargs = length(args)
-    CUDACore.cudacall(f, Tuple{map(typeof, args)...}, args...; blocks=grid, threads=(b.threadgroup, 1, 1),
-        shmem=b.shared_mem)
+    
+    CUDACore.cudacall(f, Tuple{map(typeof, args)...}, args...; 
+        blocks=grid, threads=(b.threadgroup, 1, 1), shmem=b.shared_mem
+    )
+    
     return nothing
 end
 
-function KO.encode_launch(::KO.CUDABackendTag, b::KO.KernelBinary, slots, grid::NTuple{3,Int})
+function KD.encode_launch(::KD.CUDABackendTag, b::KD.KernelBinary, slots, grid::NTuple{3,Int})
     _check_limit(b)
     _launch(b, slots, grid)
     CUDACore.synchronize()          # also throws a device-side exception host-side
@@ -118,7 +109,7 @@ function KO.encode_launch(::KO.CUDABackendTag, b::KO.KernelBinary, slots, grid::
 end
 
 # The repetitions are recorded between two events on one stream: the elapsed time excludes host latency.
-function KO.device_time(::KO.CUDABackendTag, items::AbstractVector; reps::Int)
+function KD.device_time(::KD.CUDABackendTag, items::AbstractVector; reps::Int)
     reps >= 1 || throw(ArgumentError("`reps` must be at least 1, got $reps"))
     for (b, _, _) in items
         _check_limit(b)
@@ -134,8 +125,6 @@ function KO.device_time(::KO.CUDABackendTag, items::AbstractVector; reps::Int)
     return CUDACore.elapsed(start, stop) / reps
 end
 
-# --- the eager executor -----------------------------------------------------------------------------
-
 """
     execute(proto::CuArray, l::Launch) -> Tuple
 
@@ -143,23 +132,21 @@ Allocate every `OutArray` of the launch's arguments, bind `(prelude..., args...,
 (a `Val` takes no slot), launch, and return the allocated outputs. On `CuArray` rather than
 `AbstractArray`, so that it coexists with the other backends' methods.
 """
-function KO.execute(proto::CuArray, l::KO.Launch)
-    bound, slots = KO.bind_slots(proto, l.prelude, l.args, l.extras)
-    if KO.recording()
-        KO.record!(l, Any[(:bytes => p for p in l.prelude)...,
-            (a isa KO.OutArray ? (:out => b) : b isa AbstractArray ? (:in => b) : (:scalar => b)
+function KD.execute(proto::CuArray, l::KD.Launch)
+    bound, slots = KD.bind_slots(proto, l.prelude, l.args, l.extras)
+    if KD.recording()
+        KD.record!(l, Any[(:bytes => p for p in l.prelude)...,
+            (a isa KD.OutArray ? (:out => b) : b isa AbstractArray ? (:in => b) : (:scalar => b)
              for (a, b) in zip((l.args..., l.extras...), (bound..., l.extras...)) if !(b isa Val))...])
     else
-        KO.encode_launch(KO.CUDABackendTag(), l.binary, slots, l.grid)
+        KD.encode_launch(KD.CUDABackendTag(), l.binary, slots, l.grid)
     end
-    return KO._pick_outs(l.args, bound)
+    return KD._pick_outs(l.args, bound)
 end
-
-# --- compiling --------------------------------------------------------------------------------------
 
 # KA's launch context for a static workgroup size and a dynamic ND-range is six integers: the ND-range and the
 # block counts, as two `CartesianIndices`. Rebuilt from them here, with none of `KA.launch_config` / `partition`
-# (those have error paths, which a state-free device build cannot contain). Equal to what `KO.ka_context` builds,
+# (those have error paths, which a state-free device build cannot contain). Equal to what `KD.ka_context` builds,
 # type and bits; test/cpu/cuda_flat.test.jl checks that for the KA in use.
 @inline function _rebuild_ctx(::Val{TG}, nd1::Int, nd2::Int, nd3::Int, b1::Int, b2::Int, b3::Int) where {TG}
     ND = KA.NDIteration
@@ -171,6 +158,7 @@ end
 # (`Val`s are ghost arguments: they stay in the Julia signature and leave the PTX one). `F` is the type of the
 # KA kernel function, whose singleton instance is called.
 struct FlatKA{F,TG} end
+
 function (::FlatKA{F,TG})(nd1::Int, nd2::Int, nd3::Int, b1::Int, b2::Int, b3::Int, args...) where {F,TG}
     F.instance(_rebuild_ctx(Val(TG), nd1, nd2, nd3, b1, b2, b3), args...)
     return nothing
@@ -181,6 +169,7 @@ end
 struct NoStateParams <: CUDACore.AbstractCUDACompilerParams
     inner::CUDACore.CUDACompilerParams
 end
+
 Base.getproperty(p::NoStateParams, s::Symbol) = getproperty(getfield(p, :inner), s)
 GPUCompiler.kernel_state_type(::GPUCompiler.CompilerJob{GPUCompiler.PTXCompilerTarget,NoStateParams}) = Nothing
 
@@ -218,31 +207,33 @@ function _compile_cubin(ftype::Type, sig::Type, entry::AbstractString)
             "KernelDispatch CUDA binary does not have (so that XLA's kernel-call handler can launch it): its " *
             "compiled code can still throw or otherwise needs the runtime. " *
             (isempty(reasons) ? "" : "Remaining:\n  " * join(reasons, "\n  ")) *
-            "\nIndex with unsafe_load / unsafe_store!, and avoid code that can throw."))
+            "\nIndex with unsafe_load / unsafe_store!, and avoid code that can throw."
+        ))
     end
     # A relocation is a word patched at load time with the address of a host (Julia) value: a boxed
     # constant or interned symbol the kernel refers to. A bare cubin file has no way to carry it.
     isempty(relocations) || error(
         "kernel needs launch-time relocations (interned symbols or boxed constants), which an " *
-        "ahead-of-time cubin cannot carry; remove non-isbits constants from the kernel")
+        "ahead-of-time cubin cannot carry; remove non-isbits constants from the kernel"
+    )
     dir = mktempdir()
     ptx_file, cubin_file = joinpath(dir, "kernel.ptx"), joinpath(dir, "kernel.cubin")
     write(ptx_file, asm)
     log = IOBuffer()
-    cmd = `$(CUDACore.CUDA_Compiler.ptxas()) --gpu-name $(KO.target_id(KO.CUDABackendTag())) --output-file $cubin_file $ptx_file`
+    cmd = `$(CUDACore.CUDA_Compiler.ptxas()) --gpu-name $(KD.target_id(KD.CUDABackendTag())) --output-file $cubin_file $ptx_file`
     success(run(pipeline(ignorestatus(cmd); stdout=log, stderr=log))) ||
         error("ptxas failed on the PTX for `$entry`:\n" * String(take!(log)))
     image = read(cubin_file)
     rm(dir; recursive=true, force=true)
     @debug "compiled CUDA kernel" entry bytes = length(image)
+    
     return image
 end
 
 _ka_argtype(::Type{A}) where {A<:AbstractArray} = dptr(eltype(A))
 _ka_argtype(::Type{T}) where {T} = T
 
-function KO._ka_compile(::KO.CUDABackendTag, kernel, argtypes::Tuple, tg::Int, name::String,
-        dir::String)
+function KD._ka_compile(::KD.CUDABackendTag, kernel, argtypes::Tuple, tg::Int, name::String, dir::String)
     mkpath(dir)
     path = joinpath(dir, name * ".cubin")
     isfile(path) && return path
@@ -254,8 +245,6 @@ function KO._ka_compile(::KO.CUDABackendTag, kernel, argtypes::Tuple, tg::Int, n
     return path
 end
 
-# --- routing ----------------------------------------------------------------------------------------
-
 # Wrappers over device memory that CUDA.jl leaves as a `SubArray` / `ReshapedArray` / `Adjoint` /
 # `Transpose` rather than a `CuArray`.
 const WrappedCuArray = Union{
@@ -265,50 +254,54 @@ const WrappedCuArray = Union{
     CUDACore.LinearAlgebra.Transpose{<:Any,<:CuArray},
 }
 
-KO.backend_of(::CuArray) = KO.CUDABackendTag()
-KO.backend_of(::WrappedCuArray) = KO.CUDABackendTag()
+KD.backend_of(::CuArray) = KD.CUDABackendTag()
+KD.backend_of(::WrappedCuArray) = KD.CUDABackendTag()
 
 # The launcher binds a raw pointer and no strides, so a wrapper that is not a `CuArray` (a strided
 # `view`, an adjoint) is materialised once, on the device. Anything else is left alone: a host array
 # among the arguments should fail at binding, not be copied.
-KO.device_dense(::KO.CUDABackendTag, x::CuArray) = x
-KO.device_dense(::KO.CUDABackendTag, x::WrappedCuArray) = CuArray(x)
+KD.device_dense(::KD.CUDABackendTag, x::CuArray) = x
+KD.device_dense(::KD.CUDABackendTag, x::WrappedCuArray) = CuArray(x)
 
-KO.ka_backend_object(::KO.CUDABackendTag) = CUDABackend()
+KD.ka_backend_object(::KD.CUDABackendTag) = CUDABackend()
 
 # The device's compute capability as a binary's `target` spells it: "sm_86".
-function KO.target_id(::KO.CUDABackendTag)
+function KD.target_id(::KD.CUDABackendTag)
     cap = CUDACore.capability(CUDACore.device())
     return "sm_$(cap.major)$(cap.minor)"
 end
 
 # A cubin is machine code for one architecture family (same major, device minor at least the cubin's); PTX is
 # compiled by the driver when the module loads, so any device at or above its `.target` takes it.
-function KO.compatible_target(be::KO.CUDABackendTag, b::KO.KernelBinary)
+function KD.compatible_target(be::KD.CUDABackendTag, b::KD.KernelBinary)
     # A KA binary built before they were flat takes CUDA.jl's kernel state and a context blob: launched with the
     # flat prelude it would read shifted arguments.
     b.abi === :ka && get(b.params, :ka_layout, "") != "flat" && return "KernelAbstractions binary `$(b.entry)` " *
         "was built by an older KernelDispatch, with CUDA.jl's kernel state; its layout is not the flat one launched " *
         "now. Delete the stale `ka` build directory and the registry entry, and rebuild it with `ka_compile`"
-    (isempty(b.target) || KO.binary_format(b) === :ptx) && return nothing
-    dev = KO.target_id(be)
-    KO.cuda_sm_compatible(b.target, dev) && return nothing
+    
+    (isempty(b.target) || KD.binary_format(b) === :ptx) && return nothing
+    dev = KD.target_id(be)
+    KD.cuda_sm_compatible(b.target, dev) && return nothing
+    
     return "cubin `$(b.entry)` was built for $(b.target), but this device is $dev: rebuild it for this " *
            "device, or ship PTX, which the driver compiles for any newer device"
 end
 
 # A flat KA binary takes no kernel state, and KA's context as its six integers: the ND-range, then the block counts.
-KO.ka_state_words(::KO.CUDABackendTag) = ()
-function KO.ka_prelude(::KO.CUDABackendTag, ctx, ghost::Bool)
-    ghost && throw(ArgumentError("a KA context with a static ND-range has no flat form; KernelDispatch builds " *
-        "its binaries for a dynamic ND-range"))
+KD.ka_state_words(::KD.CUDABackendTag) = ()
+function KD.ka_prelude(::KD.CUDABackendTag, ctx, ghost::Bool)
+    ghost && throw(ArgumentError(
+        "a KA context with a static ND-range has no flat form; KernelDispatch builds " *
+        "its binaries for a dynamic ND-range"
+    ))
     return Any[size(ctx.ndrange)..., size(KA.NDIteration.blocks(ctx.iterspace))...]
 end
-KO.ka_layout(::KO.CUDABackendTag) = :flat
+KD.ka_layout(::KD.CUDABackendTag) = :flat
 
 # KA's CUDA backend addresses a threadgroup by `blockIdx().x` alone and rebuilds the N-D indices from the
 # context, so the binary is launched on a flat 1-D grid.
-KO.ka_grid(::KO.CUDABackendTag, groups::NTuple{3,Int}) = (prod(groups), 1, 1)
+KD.ka_grid(::KD.CUDABackendTag, groups::NTuple{3,Int}) = (prod(groups), 1, 1)
 
 function __init__()
     ok = try
@@ -316,7 +309,8 @@ function __init__()
     catch
         false
     end
-    ok && push!(KO.LOADED_BACKENDS, :cuda)
+    ok && push!(KD.LOADED_BACKENDS, :cuda)
+    
     return nothing
 end
 

@@ -10,22 +10,18 @@
 #     KernelAbstractions binaries (`abi = :ka`) are built flat (no `KernelState`, KA's context as six integers; see
 #     the CUDA extension), and why plain pointer-and-scalar binaries (nvcc, Triton, hand-written PTX) work.
 #   - threads per block are `num_warps * 32`, one-dimensional: `threadgroup` is a multiple of 32.
-#   - XLA hands the handler its operands, then its results, as buffers; each buffer parameter takes the
-#     next one in that order. So a kernel's buffer parameters must list every input before every output.
-#
-# Confirmed with `test/cuda_probe.jl` on an NVIDIA machine: Reactant's CUDA client launches a plain cubin or PTX
-# through `triton_kernel_call_ffi@4` (the typed-FFI form jax-triton uses; the proto travels in an `opaque`
-# attribute), which is the default. `triton_kernel_call@2` launched a cubin but not PTX there, and
-# `triton_kernel_call@4` was rejected. The convention is selectable for other XLA builds:
-# `KERNELDISPATCH_CUDA_CUSTOM_CALL=<target>@<api_version>`; the probe tries the combinations.
+#   - XLA hands the handler its operands, then its results, as buffers, and each buffer parameter takes the next
+#     one in that order. A kernel's own parameter order is arbitrary (`f!(out, in...)`, outputs last, scalars between
+#     buffers), so every OUTPUT is also passed as an operand, a zero-filled array in the kernel's position, with its
+#     result aliased to it (`output_operand_aliases`): the buffers then arrive in the kernel's order, and the repeated
+#     result buffers after them go unused. Confirmed in every order by `test/cuda_probe_order.jl`; without the
+#     aliasing an output-first kernel is bound wrongly and silently (wrong values, no error).
 #
 # Note for Reactant's own client: its compile pipeline has a `raise_triton_custom_call` pass that rewrites a
 # custom call named exactly `triton_kernel_call` into a Triton-dialect op and compiles the Triton IR in the
 # payload itself (and fails for a payload without any). The `_ffi` name is not matched, which is why it is the
 # default; to use the legacy name anyway, compile with
 # `CompileOptions(; raise_triton_custom_call=false)`.
-
-# --- protobuf, just enough ----------------------------------------------------------------------------
 
 function _pb_varint(io::IO, x::Integer)
     u = x % UInt64
@@ -80,8 +76,6 @@ function _zlib_stored(data::AbstractVector{UInt8})
     write(out, hton((b << 16) | a))               # Adler-32, big-endian
     return take!(out)
 end
-
-# --- TritonAnyKernelCall ------------------------------------------------------------------------------
 
 """
     _kernel_call_proto(; entry, image, is_ptx, num_warps, shared_mem, grid, params, name) -> Vector{UInt8}
@@ -143,7 +137,7 @@ end
 function _cuda_call_convention()
     spec = get(ENV, "KERNELDISPATCH_CUDA_CUSTOM_CALL", "triton_kernel_call_ffi@4")
     i = findfirst('@', spec)
-    i === nothing && return (String(spec), 4)
+    isnothing(i) && return (String(spec), 4)
     return (String(spec[1:i-1]), parse(Int, spec[i+1:end]))
 end
 
@@ -183,21 +177,29 @@ operand in the kernel's own parameter position, so the kernel's buffer order is 
 """
 function KO.custom_call(::KO.CUDABackendTag, entry, path, operands, result_shapes, layout;
         grid, threadgroup, result_eltypes=ntuple(Returns(Float32), length(result_shapes)),
-        shared_mem::Integer=0, reverse=nothing, active_operands=nothing)
+        shared_mem::Integer=0, reverse=nothing, active_operands=nothing
+)
     (threadgroup % 32 == 0 && 0 < threadgroup <= 1024) || throw(ArgumentError(
         "threadgroup $threadgroup: XLA's kernel-call handler launches `num_warps * 32` threads per block, " *
         "so it must be a multiple of 32 and at most 1024"))
+        
     isfile(path) || throw(ArgumentError("kernel image `$path` not found"))
     isnothing(reverse) || throw(ArgumentError(
         "a reverse rule on a CUDA kernel call is not supported: its outputs are aliased operands, which shift " *
         "the operand indices `active_operands` refers to"))
 
     params, buffers, aliases = _cuda_launch_operands(layout, operands, result_shapes, result_eltypes)
-    proto = _kernel_call_proto(; entry, image=read(path), is_ptx=lowercase(splitext(path)[2]) == ".ptx",
-        num_warps=threadgroup ÷ 32, shared_mem, grid, params, name=entry)
+    proto = _kernel_call_proto(; 
+        entry, image=read(path), is_ptx=lowercase(splitext(path)[2]) == ".ptx",
+        num_warps=threadgroup ÷ 32, shared_mem, grid, params, name=entry
+    )
+
     opaque = String(_zlib_stored(proto))
     target, api = _cuda_call_convention()
     config = api >= 4 ? Dict("opaque" => opaque) : opaque
-    return _embed_custom_call(target, buffers, result_shapes; backend_config=config,
-        api_version=api, label=entry, result_eltypes, output_operand_aliases=aliases)
+    
+    return _embed_custom_call(target, buffers, result_shapes; 
+        backend_config=config, api_version=api, label=entry, 
+        result_eltypes, output_operand_aliases=aliases
+    )
 end
