@@ -162,7 +162,7 @@ end
 # extension's (`abi_prelude_and_grid`), asserted to the same type.
 function _prelude_and_grid(be::KernelBackend, b::KernelBinary, groups::NTuple{3,Int})
     abi = getfield(b, :abi)
-    abi === :plain && return (Any[], groups)
+    abi === :explicit && return (Any[], groups)
     if abi === :ka     # KA's context (built by KA from this grid) ahead of the arguments, the backend's own grid
         ctx, ghost = ka_context(be, groups, b.threadgroup)
         return (ka_prelude(be, ctx, ghost), ka_grid(be, groups))
@@ -173,7 +173,7 @@ end
 """
     abi_prelude_and_grid(::Val{abi}, backend, b::KernelBinary, groups) -> (prelude::Vector{Any}, grid::NTuple{3,Int})
 
-What a binary of a non-built-in ABI (`b.abi`, neither `:plain` nor `:ka`) takes ahead of its arguments, and the
+What a binary of a non-built-in ABI (`b.abi`, neither `:explicit` nor `:ka`) takes ahead of its arguments, and the
 grid it is dispatched on. An extension that supports such a binary (a Triton one, say) defines a method for its
 `Val{:name}`. No default: a binary whose ABI nothing implements is refused here, not launched with a shifted
 argument list.

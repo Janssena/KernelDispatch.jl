@@ -1,15 +1,16 @@
 """
     KernelDispatch
 
-Run operations as compiled kernels — eagerly on device arrays, embedded as custom calls in a
-Reactant-compiled program, or as plain Julia on the host — with kernels switchable per op and tuned
+Run operations as compiled kernels: eagerly on device arrays, embedded as custom calls in a
+Reactant-compiled program, or as plain Julia on cpu. Kernels are switchable per op and tuned
 variants picked from the inputs. See the documentation for tutorials and the API reference.
 """
 module KernelDispatch
 
-using KernelAbstractions
-using TOML
 import Preferences
+
+using TOML
+using KernelAbstractions
 
 include("backend.jl")
 include("kernel.jl")
@@ -24,10 +25,6 @@ export register_kernel!, add_variant!, use_kernel!, current_kernel, list_kernels
 export reset_kernel!, set_default_kernel!, clear_default_kernel!, selected_kernel
 export call_binary, run_binary, prepare_launch, time_binary, ka_compile, triton_binary, backend_of
 
-# Tiers. Exported above: the user API. `public` below: what kernel authors define and what tuners and tools use.
-# The backend interface (what an extension implements: `encode_launch`, `device_time`, `bind_slots`,
-# `device_dense`, `custom_call`, the `ka_*` hooks, `supported_formats`, `target_id`, `traced_support`, ...) is
-# documented on its own page and is deliberately NOT public: it may change as backends are added.
 public opname, default_kernel, @default_kernel, default_candidates, kernelname, host, forward, backward,
     variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, execute,
     Launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,

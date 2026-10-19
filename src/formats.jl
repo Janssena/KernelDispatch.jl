@@ -1,7 +1,3 @@
-# What a backend can launch, asked of a binary before it is: its format, its target architecture, and whether
-# a Reactant trace can carry it. Hooks with permissive defaults that backend extensions refine; kept apart
-# from backend.jl because they speak of `KernelBinary`, which that file precedes.
-
 """
     supported_formats(backend) -> Tuple{Vararg{Symbol}}
 
@@ -60,9 +56,11 @@ function check_binary(be::KernelBackend, b::KernelBinary)
     fmts = supported_formats(be)
     isempty(fmts) || binary_format(b) in fmts || throw(ArgumentError(
         "binary `$(b.file)`: $(nameof(typeof(be))) launches " *
-        join(string.('.', fmts), " or ") * " files, not `.$(binary_format(b))`"))
+        join(string.('.', fmts), " or ") * " files, not `.$(binary_format(b))`"
+    ))
     reason = compatible_target(be, b)
-    reason === nothing || throw(ArgumentError(reason))
+    isnothing(reason) || throw(ArgumentError(reason))
+
     return nothing
 end
 
@@ -72,7 +70,7 @@ function cuda_sm_compatible(built::AbstractString, device::AbstractString)
     isempty(built) && return true
     pat = r"^sm_(\d+?)(\d)[af]?$"
     (mb, md) = (match(pat, built), match(pat, device))
-    (mb === nothing || md === nothing) && return built == device
+    (isnothing(mb) || isnothing(md)) && return built == device
     return mb[1] == md[1] && parse(Int, md[2]) >= parse(Int, mb[2])
 end
 
@@ -88,4 +86,5 @@ function current_target()
     length(LOADED_BACKENDS) == 1 || return ""
     return get!(() -> target_id(device_backend()), _TARGETS, only(LOADED_BACKENDS))
 end
+
 const _TARGETS = Dict{Symbol,String}()

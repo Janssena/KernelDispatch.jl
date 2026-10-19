@@ -56,7 +56,8 @@ end
 function _pref_owner(o::AbstractKernelOp)
     m = parentmodule(typeof(o))
     isnothing(_package_uuid(m)) && throw(ArgumentError(
-        "op `:$(opname(o))` is not declared in a package, so it has no preferences"))
+        "op `:$(opname(o))` is not declared in a package, so it has no preferences"
+    ))
     return Base.moduleroot(m)
 end
 
@@ -73,12 +74,15 @@ function set_default_kernel!(op, kname::Symbol)
     names = map(kernelname, default_candidates(o))
     kname in names || throw(ArgumentError(
         "kernel `:$kname` is not a default candidate of op `:$(opname(o))`. Candidates: " *
-        _names(names) * " (listed in its `KernelDispatch.@default_kernel`)"))
+        _names(names) * " (listed in its `KernelDispatch.@default_kernel`)"
+    ))
     owner = _pref_owner(o)
     Preferences.set_preferences!(owner, pref_key(o) => String(kname); force=true)
+    
     @info "Default kernel of op `:$(opname(o))` set to `:$kname` in $(owner)'s preferences. It takes " *
         "effect after a restart (re-precompiling $owner and its dependents); `use_kernel!` switches " *
         "this session."
+    
     return kname
 end
 

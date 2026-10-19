@@ -2,7 +2,7 @@
 # metadata JSON beside it; `triton_binary` reads that JSON and describes the image as a `KernelBinary`
 # with `abi = :triton`. Nothing here compiles Triton: the user does that, KernelDispatch only launches the output.
 #
-# What distinguishes a Triton binary from a plain one:
+# What distinguishes a Triton binary from an `:explicit` one:
 #   - its dynamic shared memory (`shared` in the metadata) is a launch parameter: `KernelBinary.shared_mem`;
 #   - recent Triton versions declare hidden trailing pointer parameters after the kernel's own (a global scratch
 #     and a profiling pointer, both unused by kernels that need no scratch): the launcher passes that many null
@@ -30,8 +30,8 @@ launched is refused here, with an explanation: a non-NVIDIA target, `num_ctas` o
 a kernel that needs global scratch memory (`global_scratch_size > 0`).
 
 The arguments `call_binary` binds must be exactly the ones the *compiled* kernel declares: Triton drops
-`constexpr` arguments from the signature, and (depending on its version) integers it specialized to 1. Buffers
-must also list every input before every output when launched from a Reactant trace.
+`constexpr` arguments from the signature, and (depending on its version) integers it specialized to 1. The order
+of the buffers is the kernel's own: a Reactant trace passes each output as an aliased operand in its position.
 """
 function triton_binary(json::AbstractString; image::Union{Nothing,AbstractString}=nothing, tile=1,
         params::NamedTuple=NamedTuple(), scratch_pointers::Union{Nothing,Integer}=nothing)
@@ -67,7 +67,7 @@ function triton_binary(json::AbstractString; image::Union{Nothing,AbstractString
         String(image)
     else
         i = findfirst(isfile, stem .* (".cubin", ".ptx"))
-        i === nothing && throw(ArgumentError(
+        isnothing(i) && throw(ArgumentError(
             "no kernel image beside `$json`: expected `$(basename(stem)).cubin` or `.ptx`; pass `image=`"))
         stem * (".cubin", ".ptx")[i]
     end

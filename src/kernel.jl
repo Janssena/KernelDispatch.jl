@@ -32,7 +32,7 @@ abstract type AbstractKernel end
 
 """
     KernelBinary(file; entry=basename without extension, threadgroup, tile=(threadgroup, 1, 1),
-        params=(;), abi=:plain, target="")
+        params=(;), abi=:explicit, target="")
 
 One compiled launch, everything about it persisted with it in the manifest.
 
@@ -56,7 +56,8 @@ One compiled launch, everything about it persisted with it in the manifest.
   Any grid can be launched this way: with `tile=1`, the extent IS the grid.
 - `params` are the tuning numbers it was built with, for [`extras`](@ref) to read.
 - `abi` says what the binary takes besides the arguments `call_binary` binds, so the launcher can supply
-  it. `:plain` (the default) takes nothing: buffers and scalars, in the order given. `:ka` marks a binary
+  it. `:explicit` (the default) takes nothing: exactly the buffers and scalars you bind, in the order given, with
+  nothing added or implied (`:plain`, its earlier name, is still accepted). `:ka` marks a binary
   compiled from a KernelAbstractions kernel ([`ka_compile`](@ref) sets it): it takes the backend's
   [`ka_state_words`](@ref) and KA's launch context ahead of its arguments (in the form the backend's
   [`ka_prelude`](@ref) gives; CUDA passes the context as six integers), and is dispatched flat. An
@@ -82,6 +83,7 @@ struct KernelBinary
     # Fields of `params` kept sorted, so a binary compares equal to itself after a manifest round-trip.
     function KernelBinary(file, entry, threadgroup, params::NamedTuple, abi::Symbol, tile,
             target::AbstractString="", shared_mem::Integer=0)
+        abi === :plain && (abi = :explicit)          # the earlier name of the default ABI
         t = _pad3(tile)
         all(>=(1), t) || throw(ArgumentError("`tile` must be positive along every axis, got $t"))
         shared_mem >= 0 || throw(ArgumentError("`shared_mem` must be non-negative, got $shared_mem"))
@@ -95,7 +97,7 @@ function KernelBinary(file::AbstractString;
     threadgroup::Integer,
     tile=(threadgroup, 1, 1),
     params::NamedTuple=NamedTuple(),
-    abi::Symbol=:plain,
+    abi::Symbol=:explicit,
     target::AbstractString="",
     shared_mem::Integer=0,
     is_ka::Union{Nothing,Bool}=nothing)       # deprecated alias for `abi=:ka`
@@ -554,7 +556,7 @@ function load_manifest(op, k; target::AbstractString=current_target())
             for bd in vd["binary"]
                 file = joinpath(dir, bd["file"])
                 isfile(file) || (v = nothing; break)
-                abi = haskey(bd, "abi") ? Symbol(bd["abi"]) : (get(bd, "is_ka", false) ? :ka : :plain)
+                abi = haskey(bd, "abi") ? Symbol(bd["abi"]) : (get(bd, "is_ka", false) ? :ka : :explicit)
                 v[Symbol(bd["name"])] = KernelBinary(file, bd["entry"], bd["threadgroup"],
                     NamedTuple(Symbol(p) => x for (p, x) in bd["params"]), abi,
                     get(bd, "tile", (bd["threadgroup"], 1, 1)), get(bd, "target", ""), get(bd, "shared_mem", 0))
