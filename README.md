@@ -1,10 +1,14 @@
 # KernelDispatch.jl
 
+<p align="center">
+  <img src="assets/logo.png" alt="KernelDispatch.jl logo" width="200">
+</p>
+
 Simplify working with compiled kernel binaries built anywhere, directly in Julia!
 - Define an op
 - Register kernels for it
 - Select default kernel and run the op on CPU and device arrays simply through multiple dispatch!
-- Kernels can even run embedded in a Reactant-compiled program as a stablehlo.custom_call!
+- Kernels can even run embedded in a Reactant-compiled program as a `stablehlo.custom_call`!
 
 An operation can have several **kernels** (implementations) you switch between at runtime, each with
 **tuned variants** picked from the inputs. Pure-Julia [KernelAbstractions](https://github.com/JuliaGPU/KernelAbstractions.jl) 
