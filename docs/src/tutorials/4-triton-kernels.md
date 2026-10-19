@@ -325,6 +325,9 @@ for f in glob.glob(os.path.join(os.environ["TRITON_CACHE_DIR"], "**", "scale_ker
         shutil.copy(f, "kernels/")
 ```
 
+If the GPU is only available inside a job, see [Building without a GPU](../backends.md#Building-without-a-GPU): the files can
+be produced elsewhere and registered on the GPU node.
+
 A binary is one *configuration*: the block sizes, `num_warps` and `num_stages` it was compiled with. For a kernel wrapped
 in an autotuner (trifast's), launch the `JITFunction` underneath with an explicit configuration, once per configuration you
 want to ship; `test/fixtures/make_trifast_fixture.py` does that for trifast's four kernels.

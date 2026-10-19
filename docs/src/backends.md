@@ -148,6 +148,32 @@ The arguments `call_binary` binds must be exactly the ones the *compiled* kernel
 `constexpr` arguments from the signature and, depending on its version, integers it specialized to 1. See
 [tutorial 4](tutorials/4-triton-kernels.md#B.-NVIDIA:-a-Triton-.cubin).
 
+### Building without a GPU
+
+On some clusters a GPU is only available inside a job, so binaries have to be built on a node that has none. What that
+allows depends on where the binary comes from:
+
+| source | without a GPU | note |
+|:--|:--|:--|
+| `nvcc` (`.cubin`, `.ptx`) | **yes** | `nvcc -cubin -arch=sm_86 …` and `nvcc -ptx …` need the CUDA toolkit, not a device. The architecture is the `-arch` you give |
+| Triton | not tested | the scripts in this repository (`test/fixtures/make_*_fixture.py`) launch the kernel once and so need a GPU. Triton's ahead-of-time `triton.compile(ASTSource(...), target=GPUTarget("cuda", 86, 32))`, the call [tutorial 4](tutorials/4-triton-kernels.md) uses for Metal, should not, but this has not been tried |
+| [`ka_compile`](@ref) | **no, currently** | the target is read from the device, the compiler is configured from the current device, and the CUDA backend only registers itself when `CUDA.jl` reports a working device. Build KA kernels inside the job (the first call does, and the result is cached per architecture) |
+
+Registering is the other half. [`add_variant!`](@ref) files a variant under the *current device's* architecture
+(`ops/<Package>.<op>/sm_86/<kernel>/`), and without a device that architecture is `""`, so a variant registered on the
+GPU-less node would be looked up in the wrong place on the GPU node. So:
+
+1. Build the binary files (`.cubin`, `.ptx`, and Triton's `.json`) wherever you like, and keep them in a directory the job
+   can read.
+2. **Register them at run time, on the GPU node**, ideally from `build!` ([tutorial 2](tutorials/2-registering-kernels.md)),
+   which does it on first use. Registering only copies the file and writes a manifest, so it is cheap.
+3. **Give prebuilt cubins their `target`** (`KernelBinary("x.cubin"; target="sm_86", …)`, or `triton_binary`, which reads it
+   from Triton's metadata). The launch then compares it with the device and refuses a binary built for another architecture
+   with an explanation. Without a `target` the file is launched unchecked and a mismatch surfaces as a driver error.
+   A `.ptx` is portable and needs none.
+4. Build for the architecture of the GPUs the job will get, not the login node's. A cubin runs on a device of the same major
+   compute capability whose minor version is at least the cubin's; PTX runs on any newer device.
+
 ## Metal
 
 Metal launches `.metallib` binaries (prebuilt, or compiled from a KA kernel by [`ka_compile`](@ref)) through Metal.jl.
@@ -181,6 +207,7 @@ script, `test/ext/cuda/smoke.jl` (stages 1-16, each printing PASS or FAIL).
 
 ## Limits and what is left
 
+- `ka_compile` on CUDA, and registering variants, need the GPU to be present (see [Building without a GPU](@ref)).
 - A single global device backend per session: [`current_target`](@ref) is `""` when more than one is loaded.
 - Eager launches are synchronous; there are no asynchronous launches.
 - Only Float32 (and Bool masks) have been tested, with every kind of binary. Float16 and BFloat16 are not tested yet.
