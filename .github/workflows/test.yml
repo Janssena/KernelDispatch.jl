@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]       # macOS arm64 runners are often capacity-limited; the CPU group needs no Apple GPU
         julia: ['1.12']
     steps:
       - uses: actions/checkout@v4
