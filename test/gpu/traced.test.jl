@@ -60,7 +60,8 @@ else
             bin = register_logit_scale!()[:main]
             # Built inside the traced function: a captured `KernelBinary` (abstract `params`) is not traceable.
             file, entry = bin.file, bin.entry
-            loose() = KernelBinary(file; entry, threadgroup=LS_TG, abi=:ka)
+            layout = get(bin.params, :ka_layout, "")      # a backend that records one (CUDA: "flat") refuses a binary without it
+            loose() = KernelBinary(file; entry, threadgroup=LS_TG, abi=:ka, params=(; ka_layout=layout))
             x = randn(rng, Float32, 100)
             f(x) = only(run_binary(loose(), OutArray(Float32, 100), x, 2.0f0, Int32(100), Val(LS_TG);
                 extent=100))

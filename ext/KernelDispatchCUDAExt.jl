@@ -277,8 +277,10 @@ function KD.compatible_target(be::KD.CUDABackendTag, b::KD.KernelBinary)
     # A KA binary built before they were flat takes CUDA.jl's kernel state and a context blob: launched with the
     # flat prelude it would read shifted arguments.
     b.abi === :ka && get(b.params, :ka_layout, "") != "flat" && return "KernelAbstractions binary `$(b.entry)` " *
-        "was built by an older KernelDispatch, with CUDA.jl's kernel state; its layout is not the flat one launched " *
-        "now. Delete the stale `ka` build directory and the registry entry, and rebuild it with `ka_compile`"
+        "was built by an older KernelDispatch, with CUDA.jl's kernel state, or has no `ka_layout = \"flat\"` in its " *
+        "`params` (a `KernelBinary` made by hand from a `ka_compile` file must copy the binary's `params`). Its layout " *
+        "is not the flat one launched now: delete the stale `ka` build directory and the registry entry, and rebuild " *
+        "it with `ka_compile`"
     
     (isempty(b.target) || KD.binary_format(b) === :ptx) && return nothing
     dev = KD.target_id(be)

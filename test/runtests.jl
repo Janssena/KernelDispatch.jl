@@ -13,8 +13,12 @@
 #          failure would not pin down (and, for CUDA, the diagnostic scripts smoke.jl and probe*.jl). Some need no device
 #          (`custom_call`, `cuda_launch`, `cuda_flat`: they run with the CPU group), the rest need that backend's GPU.
 # `KD_TEST_GPU=none|metal|cuda` overrides the GPU backend choice.
+# `JULIA_TEST_VERBOSE=true` prints the counts of the nested testsets too, also when they pass (Julia's Test hides them;
+# the variable is read here, not by Julia). Example:  JULIA_TEST_VERBOSE=true julia --project=test test/runtests.jl gpu
 
 using Test
+
+const VERBOSE = lowercase(get(ENV, "JULIA_TEST_VERBOSE", "false")) in ("true", "1", "yes")
 
 const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "binary_checks", "triton"]
 const EXT_HOST_SECTIONS = ["custom_call", "cuda_launch", "cuda_flat"]      # ext/, no device needed
@@ -41,31 +45,31 @@ end
 has_gpu = GPU !== nothing
 has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backend"
 
-@testset "KernelDispatch" begin
+@testset verbose = VERBOSE "KernelDispatch" begin
     include("fixtures.jl")
 
-    @testset "CPU" begin
-        cpu("kernels") && @testset "kernels and registry" begin
+    @testset verbose = VERBOSE "CPU" begin
+        cpu("kernels") && @testset verbose = VERBOSE "kernels and registry" begin
             include("cpu/kernel.test.jl")
         end
 
-        cpu("inference") && @testset "type stability" begin
+        cpu("inference") && @testset verbose = VERBOSE "type stability" begin
             include("cpu/inference.test.jl")
         end
 
-        cpu("preferences") && @testset "preferences" begin
+        cpu("preferences") && @testset verbose = VERBOSE "preferences" begin
             include("cpu/preferences.test.jl")
         end
 
-        cpu("sdpa") && @testset "SDPAOps" begin
+        cpu("sdpa") && @testset verbose = VERBOSE "SDPAOps" begin
             include("cpu/sdpa.test.jl")
         end
 
-        cpu("binary_checks") && @testset "binary formats, targets, traced support" begin
+        cpu("binary_checks") && @testset verbose = VERBOSE "binary formats, targets, traced support" begin
             include("cpu/binary_checks.test.jl")
         end
 
-        cpu("triton") && @testset "Triton binaries (reader, ABI, real-Triton fixtures)" begin
+        cpu("triton") && @testset verbose = VERBOSE "Triton binaries (reader, ABI, real-Triton fixtures)" begin
             include("cpu/triton.test.jl")
         end
 
@@ -73,47 +77,47 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
 
     # Backend-specific tests that need no device: Reactant on the CPU client, or a child process that loads the
     # extension. Run with the CPU group, or on their own with `ext`.
-    @testset "Backend extensions (host only)" begin
-        ext_host("custom_call") && @testset "Metal: custom_call (traced, CPU client)" begin
+    @testset verbose = VERBOSE "Backend extensions (host only)" begin
+        ext_host("custom_call") && @testset verbose = VERBOSE "Metal: custom_call (traced, CPU client)" begin
             include("ext/metal/custom_call.test.jl")      # Reactant, but never runs a kernel
         end
 
-        ext_host("cuda_launch") && @testset "CUDA: traced launch (encoding, no GPU)" begin
+        ext_host("cuda_launch") && @testset verbose = VERBOSE "CUDA: traced launch (encoding, no GPU)" begin
             include("ext/cuda/launch_encoding.test.jl")
         end
 
-        ext_host("cuda_flat") && @testset "CUDA: flat KA layout (host only)" begin
+        ext_host("cuda_flat") && @testset verbose = VERBOSE "CUDA: flat KA layout (host only)" begin
             include("ext/cuda/flat_layout.test.jl")
         end
     end
 
     if has_gpu
-        @testset "GPU ($GPU)" begin
-            gpu("conformance") && @testset "backend conformance" begin
+        @testset verbose = VERBOSE "GPU ($GPU)" begin
+            gpu("conformance") && @testset verbose = VERBOSE "backend conformance" begin
                 include("gpu/conformance.test.jl")
             end
 
-            gpu("launch") && @testset "eager launches" begin
+            gpu("launch") && @testset verbose = VERBOSE "eager launches" begin
                 include("gpu/launch.test.jl")
             end
 
-            gpu("gpu_inference") && @testset "type stability on the device" begin
+            gpu("gpu_inference") && @testset verbose = VERBOSE "type stability on the device" begin
                 include("gpu/inference.test.jl")
             end
 
-            gpu("gpu_sdpa") && @testset "SDPAOps on the device" begin
+            gpu("gpu_sdpa") && @testset verbose = VERBOSE "SDPAOps on the device" begin
                 include("gpu/sdpa.test.jl")
             end
 
-            gpu("traced") && @testset "Traced (Reactant)" begin
+            gpu("traced") && @testset verbose = VERBOSE "Traced (Reactant)" begin
                 include("gpu/traced.test.jl")
             end
 
-            ext_gpu("ext_cuda") && GPU === :cuda && @testset "CUDA extension" begin
-                @testset "explicit binaries, Triton ABI, flat KA" begin
+            ext_gpu("ext_cuda") && GPU === :cuda && @testset verbose = VERBOSE "CUDA extension" begin
+                @testset verbose = VERBOSE "explicit binaries, Triton ABI, flat KA" begin
                     include("ext/cuda/explicit.test.jl")
                 end
-                @testset "Triton kernels, eager and traced" begin
+                @testset verbose = VERBOSE "Triton kernels, eager and traced" begin
                     include("ext/cuda/triton.test.jl")
                 end
             end
