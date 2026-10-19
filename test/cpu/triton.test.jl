@@ -10,14 +10,13 @@
 # The launches themselves are ext/cuda/triton.test.jl (eager and traced, against Triton's own output).
 
 using Test, KernelDispatch, TOML
-const KT = KernelDispatch
 isdefined(@__MODULE__, :TRITON_KERNELS) || include(joinpath(@__DIR__, "..", "triton_fixtures.jl"))
 isdefined(@__MODULE__, :TRIFAST_FIXTURES) || include(joinpath(@__DIR__, "..", "trifast_fixtures.jl"))
 
 struct TritonOp <: AbstractKernelOp end
 struct TritonK <: AbstractKernel end
 const TRITON_ROOT = mktempdir()
-KT.cache_dir(::TritonOp) = joinpath(TRITON_ROOT, "triton_op")
+KD.cache_dir(::TritonOp) = joinpath(TRITON_ROOT, "triton_op")
 
 err(f) = try f(); nothing catch e; e end
 
@@ -26,14 +25,14 @@ err(f) = try f(); nothing catch e; e end
 @testset "JSON reader" begin
     doc = """{"name": "k", "n": 4, "x": -1.5e-3, "yes": true, "no": false, "none": null,
              "list": [1, [2, 3], {"a": []}], "nested": {"arch": 86}, "esc": "a\\"b\\n\\u0041\\\\"}"""
-    j = KT._json_parse(doc)
+    j = KD._json_parse(doc)
     @test j["name"] == "k" && j["n"] == 4 && j["x"] ≈ -1.5e-3
     @test j["yes"] === true && j["no"] === false && j["none"] === nothing
     @test j["list"] == [1, [2, 3], Dict("a" => []) ] && j["nested"]["arch"] == 86
     @test j["esc"] == "a\"b\nA\\"
-    @test KT._json_parse("[]") == [] && KT._json_parse(" {} ") == Dict{String,Any}() && KT._json_parse("-3") == -3
+    @test KD._json_parse("[]") == [] && KD._json_parse(" {} ") == Dict{String,Any}() && KD._json_parse("-3") == -3
     for bad in ("", "{", "{\"a\":}", "[1,]x", "{\"a\" 1}", "tru", "1 2", "\"open")
-        @test_throws Exception KT._json_parse(bad)
+        @test_throws Exception KD._json_parse(bad)
     end
 end
 
@@ -48,12 +47,12 @@ end
     f = tempname() * ".cubin"; write(f, UInt8[1])
     b = KernelBinary(f; entry="k", threadgroup=64, tile=1, abi=:triton, params=(; scratch_pointers=2))   # tile 1: extent is the grid
     # Nothing ahead of the arguments, and the grid as given: the trailing pointers are the launcher's.
-    prelude, grid = KT.abi_prelude_and_grid(Val(:triton), KT.CUDABackendTag(), b, (3, 2, 1))
+    prelude, grid = KD.abi_prelude_and_grid(Val(:triton), KD.CUDABackendTag(), b, (3, 2, 1))
     @test isempty(prelude) && grid == (3, 2, 1)
-    l = KT.prepare_launch(b, rand(Float32, 4); extent=(3, 2), extras=(Int32(4),))
+    l = KD.prepare_launch(b, rand(Float32, 4); extent=(3, 2), extras=(Int32(4),))
     @test l.groups == (3, 2, 1) && l.grid == (3, 2, 1) && isempty(l.prelude)
-    @test KT.trailing_pointers(b) == 2
-    @test KT.trailing_pointers(KernelBinary(f; threadgroup=32)) == 0          # only a `:triton` binary has them
+    @test KD.trailing_pointers(b) == 2
+    @test KD.trailing_pointers(KernelBinary(f; threadgroup=32)) == 0          # only a `:triton` binary has them
 end
 
 # --- against what real Triton compiled -----------------------------------------------------------------------------
@@ -64,7 +63,7 @@ if !have_triton_fixtures()
 else
     @testset "triton_binary and the compiled signature: $(k.name)" for k in TRITON_KERNELS
         p = triton_paths(k.name)
-        meta = KT._json_parse(read(p.json, String))
+        meta = KD._json_parse(read(p.json, String))
         kinds = ptx_param_kinds(read(p.ptx, String))
 
         for image in (:cubin, :ptx)
@@ -72,7 +71,7 @@ else
             @test b.abi === :triton && b.entry == k.name && b.tile == (1, 1, 1)    # tile 1: `extent` is the grid
             @test b.threadgroup == 32 * k.num_warps == 32 * meta["num_warps"]
             @test b.shared_mem == meta["shared"]
-            @test KT.binary_format(b) === image
+            @test KD.binary_format(b) === image
             @test b.target == (image === :cubin ? "sm_" * string(meta["target"]["arch"]) : "")   # PTX is portable
             @test b.params.triton_version == meta["triton_version"]
         end
@@ -80,7 +79,7 @@ else
         # The hidden trailing pointers: the metadata has both scratch entries, and the compiled kernel ends in exactly
         # that many pointer parameters after the arguments Triton kept.
         b = triton_binary(p.json)
-        nptr = KT.trailing_pointers(b)
+        nptr = KD.trailing_pointers(b)
         @test nptr == b.params.scratch_pointers == 2
         @test length(kinds) == length(k.args) + nptr
         @test kinds[1:length(k.args)] == k.args                    # what `forward` binds, in this order
@@ -92,7 +91,7 @@ else
         @test endswith(triton_binary(p.json).file, ".cubin")                       # the cubin beside the JSON, by default
         @test endswith(triton_binary(p.json; image=p.ptx).file, ".ptx")
         @test triton_binary(p.json; tile=(8, 1)).tile == (8, 1, 1)
-        @test KT.trailing_pointers(triton_binary(p.json; scratch_pointers=0)) == 0
+        @test KD.trailing_pointers(triton_binary(p.json; scratch_pointers=0)) == 0
         @test triton_binary(p.json; params=(; mine=1)).params.mine == 1
         # With only the PTX beside the JSON, the PTX is used.
         dir = mktempdir()
@@ -127,16 +126,16 @@ else
         @test b.shared_mem > 0                                         # a real, nonzero case
         v = add_variant!(TritonOp(), TritonK(), (:f32,); fwd=b)
         @test v[:fwd].shared_mem == b.shared_mem && v[:fwd].abi === :triton && v[:fwd].params.scratch_pointers == 2
-        delete!(KT.VARIANTS, (TritonOp, TritonK, KT.current_target()))
-        again = KT.load_manifest(TritonOp(), TritonK())[(:f32,)][:fwd]
+        delete!(KD.VARIANTS, (TritonOp, TritonK, KD.current_target()))
+        again = KD.load_manifest(TritonOp(), TritonK())[(:f32,)][:fwd]
         @test again == v[:fwd]
 
         # A manifest written before `shared_mem` existed loads with 0.
-        path = KT.manifest_path(TritonOp(), TritonK())
+        path = KD.manifest_path(TritonOp(), TritonK())
         raw = TOML.parsefile(path)
         delete!(only(only(raw["variant"])["binary"]), "shared_mem")
         open(io -> TOML.print(io, raw), path, "w")
-        @test KT.load_manifest(TritonOp(), TritonK())[(:f32,)][:fwd].shared_mem == 0
+        @test KD.load_manifest(TritonOp(), TritonK())[(:f32,)][:fwd].shared_mem == 0
     end
 end
 
@@ -153,7 +152,7 @@ else
         want = [a["kind"] == "i32" ? :u32 : a["kind"] == "f32" ? :f32 : :ptr for a in inst["args"]]
         # What the script recorded is what the compiled kernel declares, then the hidden pointers.
         @test kinds[1:length(want)] == want
-        @test length(kinds) == length(want) + KT.trailing_pointers(b)
+        @test length(kinds) == length(want) + KD.trailing_pointers(b)
         @test b.shared_mem == inst["shared"] && b.threadgroup == 32 * inst["num_warps"] && b.abi === :triton
         plan = trifast_plan(case, inst)
         @test length(plan.args) == length(want) && length(plan.grid) == 3

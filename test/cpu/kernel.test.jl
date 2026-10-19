@@ -4,7 +4,6 @@
 using Test, KernelDispatch
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))
 
-const KD = KernelDispatch
 
 struct Other <: AbstractKernel end
 KernelDispatch.kernelname(::Other) = :other

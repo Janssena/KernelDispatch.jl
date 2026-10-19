@@ -5,7 +5,6 @@
 
 using Test, Random, KernelDispatch, Reactant
 
-const KB = KernelDispatch
 
 scale(b, x, a=3.0f0) = Array(only(run_binary(b, x, OutArray(Float32, length(x)), a, Int32(length(x)); extent=length(x))))
 
@@ -15,16 +14,16 @@ scale(b, x, a=3.0f0) = Array(only(run_binary(b, x, OutArray(Float32, length(x)),
     rng = Xoshiro(11)
 
     @testset "the backend is wired" begin
-        @test KB.device_available() && KB.device_backend() === GPU_TAG
-        @test KB.backend_of(DeviceArray(rand(Float32, 4))) === GPU_TAG
-        @test GPU_TAG isa KB.GPUBackend
-        @test !isempty(KB.supported_formats(GPU_TAG))
-        @test KB.target_id(GPU_TAG) isa String && KB.current_target() == KB.target_id(GPU_TAG)
+        @test KD.device_available() && KD.device_backend() === GPU_TAG
+        @test KD.backend_of(DeviceArray(rand(Float32, 4))) === GPU_TAG
+        @test GPU_TAG isa KD.GPUBackend
+        @test !isempty(KD.supported_formats(GPU_TAG))
+        @test KD.target_id(GPU_TAG) isa String && KD.current_target() == KD.target_id(GPU_TAG)
     end
 
     @testset "$label: eager launches" for (label, b) in bins
-        @test KB.binary_format(b) in KB.supported_formats(GPU_TAG)
-        @test KB.check_binary(GPU_TAG, b) === nothing
+        @test KD.binary_format(b) in KD.supported_formats(GPU_TAG)
+        @test KD.check_binary(GPU_TAG, b) === nothing
         for n in (1, 63, 64, 65, 1000)
             x = randn(rng, Float32, n)
             y = only(run_binary(b, DeviceArray(x), OutArray(Float32, n), 3.0f0, Int32(n); extent=n))
@@ -40,7 +39,7 @@ scale(b, x, a=3.0f0) = Array(only(run_binary(b, x, OutArray(Float32, length(x)),
     end
 
     @testset "$label: limits and timing" for (label, b) in bins
-        @test b.threadgroup <= KB.max_threads(b) <= device_max_threads()
+        @test b.threadgroup <= KD.max_threads(b) <= device_max_threads()
         big = KernelBinary(b.file; entry=b.entry, threadgroup=4096)
         x = DeviceArray(rand(Float32, 64))
         args() = (OutArray(Float32, 64), x, 2.0f0, Int32(64))
@@ -57,10 +56,10 @@ scale(b, x, a=3.0f0) = Array(only(run_binary(b, x, OutArray(Float32, length(x)),
         exotic = KernelBinary(first(bins).second.file; entry="scale", threadgroup=64, abi=:no_such_abi)
         e = try prepare_launch(exotic, DeviceArray(rand(Float32, 4)); extent=4); nothing catch e; e end
         @test e isa ArgumentError && occursin(":no_such_abi", e.msg)                  # an ABI nothing implements
-        if !isempty(KB.target_id(GPU_TAG))                                            # architecture-specific devices
+        if !isempty(KD.target_id(GPU_TAG))                                            # architecture-specific devices
             for (label, b) in bins
                 wrong = KernelBinary(b.file; entry=b.entry, threadgroup=b.threadgroup, target="sm_20")
-                ok = KB.binary_format(b) === :ptx                                    # PTX is portable
+                ok = KD.binary_format(b) === :ptx                                    # PTX is portable
                 e = try prepare_launch(wrong, DeviceArray(rand(Float32, 4)); extent=4); nothing catch e; e end
                 @test ok ? e === nothing : (e isa ArgumentError && occursin("built for sm_20", e.msg))
             end
@@ -80,7 +79,7 @@ scale(b, x, a=3.0f0) = Array(only(run_binary(b, x, OutArray(Float32, length(x)),
                     loose() = KernelBinary(file; entry, threadgroup=tg)         # built inside the trace
                     x = randn(rng, Float32, 100)
                     f(x) = only(run_binary(loose(), x, OutArray(Float32, 100), 2.0f0, Int32(100); extent=100))
-                    @test KB.traced_support(GPU_TAG, b) === nothing
+                    @test KD.traced_support(GPU_TAG, b) === nothing
                     @test Array(@jit f(Reactant.to_rarray(x))) ≈ 2.0f0 .* x
                     @test occursin(TRACED_CALL_TARGET, repr(Reactant.@code_hlo optimize = false f(Reactant.to_rarray(x))))
                 end
