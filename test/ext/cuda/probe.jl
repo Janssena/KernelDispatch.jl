@@ -1,10 +1,10 @@
 # Which custom-call convention does the XLA behind Reactant's CUDA client accept for launching a cubin?
 # Run on an NVIDIA machine and paste the table back:
 #
-#     julia --project=test test/cuda_probe.jl
+#     julia --project=test test/ext/cuda/probe.jl
 #
 # Each case runs in a child Julia process (an XLA fatal error then costs only that case) and launches the
-# hand-written `scale` kernel (test/cuda_ptx.jl) from a Reactant trace, once per combination of
+# hand-written `scale` kernel (test/ext/cuda/ptx.jl) from a Reactant trace, once per combination of
 #
 #     calling convention   triton_kernel_call_ffi@4   (jax-triton's typed-FFI form; the default)
 #                          triton_kernel_call@2       (legacy, status-returning)
@@ -27,7 +27,7 @@ function run_case(convention, image)
     using_code = quote
         using KernelDispatch, CUDA, Reactant
         const GPU_PKG = CUDA
-        include($(joinpath(@__DIR__, "cuda_ptx.jl")))
+        include($(joinpath(@__DIR__, "ptx.jl")))
         bins = scale_binaries(mktempdir())
         bin = bins[$(QuoteNode(Symbol(image)))]
         file, entry, tg = bin.file, bin.entry, bin.threadgroup

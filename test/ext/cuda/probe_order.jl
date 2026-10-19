@@ -1,7 +1,7 @@
 # Does XLA's kernel-call handler launch a kernel whose OUTPUT buffer comes before an input (or between scalars)?
 # Run on an NVIDIA machine and paste the output back:
 #
-#     julia --project=test test/cuda_probe_order.jl
+#     julia --project=test test/ext/cuda/probe_order.jl
 #
 # Background: the handler is given a launch's buffers as operands, then results, and binds the kernel's buffer
 # parameters to them in that order, so today a traced CUDA launch needs every input before every output
@@ -11,7 +11,7 @@
 # (`output_operand_aliases`), so the buffers arrive in the kernel's own order. What is unknown is whether the handler
 # accepts more buffers (operands + results) than the kernel has array parameters.
 #
-# The hand-written `scale` PTX (test/cuda_ptx.jl) in three parameter orders, each launched from `@jit` with and without
+# The hand-written `scale` PTX (test/ext/cuda/ptx.jl) in three parameter orders, each launched from `@jit` with and without
 # the aliasing. Each case runs in a child process (an XLA fatal error then costs only that case):
 #
 #   order  xyan   inputs first (today's contract)       plain: expected PASS (the control)
@@ -25,7 +25,7 @@
 
 using Random, KernelDispatch, CUDA
 const GPU_PKG = CUDA
-include(joinpath(@__DIR__, "cuda_ptx.jl"))     # SCALE_PTX
+include(joinpath(@__DIR__, "ptx.jl"))     # SCALE_PTX
 
 # The scale kernel with its parameters in another order (the body reads them by name).
 function variant_ptx(order::Vector{String}, entry::String)

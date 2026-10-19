@@ -1,6 +1,6 @@
 # Type stability on the device: routing on the backend's arrays, the KA hooks, and the launch paths.
 # `@inferred` alone for launches (a second run would dispatch a second kernel); `@test_nowarn` where a
-# warning is the failure. The op is SDPAOps: `FlashAttn` is an `:explicit` (prebuilt, Metal-only) binary,
+# warning is the failure. The op is SDPAOps: `FlashAttn` is an `:explicit` (prebuilt, Metal-only) binary where the backend has prebuilt kernels,
 # `SDPAKA` a KA binary with `extras`. The device-free half is in cpu/inference.test.jl.
 
 using Test, KernelDispatch, SDPAOps, KernelAbstractions
@@ -9,7 +9,7 @@ isdefined(@__MODULE__, :sdpa_binary_args) || include(joinpath(@__DIR__, "..", "s
 
 const KOI = KernelDispatch
 # The kernels with a binary on this backend: `FlashAttn` is a `.metallib`.
-const INFER_KERNELS = GPU === :metal ? (FlashAttn(), SDPAKA(), SDPADyn()) : (SDPAKA(), SDPADyn())
+const INFER_KERNELS = (prebuilt_sdpa_kernels()..., SDPAKA(), SDPADyn())
 
 @testset "routing on device arrays" begin
     W = wrapped_array_type()
@@ -34,7 +34,7 @@ end
     tag = GPU_TAG
     words = @inferred KOI.ka_state_words(tag)
     @test words isa Tuple
-    GPU === :metal && @test words === (UInt32(0),)           # Metal.jl's kernel-state word
+    @test words === EXPECTED_KA_STATE_WORDS                  # the backend's hidden leading arguments
     @test KOI.ka_backend_object(tag) isa KernelAbstractions.Backend
     @test @inferred(KOI.ka_grid(tag, (2, 3, 4))) === (24, 1, 1)             # flat
     ctx, ghost = KOI.ka_context(tag, (2, 1, 1), 64)
@@ -64,7 +64,7 @@ end
     @test @inferred(forward(SDPA(), SDPAKA(), q, k, v)) isa DeviceArray
     # The op call infers too: its kernel is a method (`@default_kernel`), not a table entry. (The default
     # is `FlashAttn`, which exists on Metal only.)
-    if GPU === :metal
+    if !isempty(prebuilt_sdpa_kernels())
         @test_nowarn @inferred SDPA()(q, k, v)
         user(q, k, v) = sum(SDPA()(q, k, v)) + 1.0f0
         @test @inferred(user(q, k, v)) isa Float32
@@ -79,9 +79,9 @@ end
     ka = KOI.variant(SDPA(), SDPAKA(), (:Float32,))[:fwd]
     out() = OutArray(Float32, dv, n)
     cases = Pair[ka => (sdpa_binary_args(SDPAKA(), out(), q, k, v)..., Val(64))]
-    if GPU === :metal
-        plain = KOI.variant(SDPA(), FlashAttn(), (:Float32,))[:fwd]
-        push!(cases, plain => sdpa_binary_args(FlashAttn(), out(), q, k, v))
+    for pk in prebuilt_sdpa_kernels()
+        plain = KOI.variant(SDPA(), pk, (:Float32,))[:fwd]
+        push!(cases, plain => sdpa_binary_args(pk, out(), q, k, v))
     end
     for (b, args) in cases
         l = @inferred prepare_launch(b, args...; extent=n)

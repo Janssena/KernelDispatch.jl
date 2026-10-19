@@ -1,7 +1,7 @@
 # Can a KernelAbstractions kernel be launched from a Reactant trace on CUDA as a *binary*? Run on an NVIDIA
 # machine and paste the whole output back:
 #
-#     julia --project=test test/cuda_probe_ka.jl
+#     julia --project=test test/ext/cuda/probe_ka.jl
 #
 # Background: XLA's `triton_kernel_call` handler passes a kernel only device pointers and 1/4/8-byte scalars. A
 # KA binary takes CUDA.jl's `KernelState` and KA's launch context as struct arguments, so it cannot go through
@@ -218,7 +218,7 @@ end
 
 # --- 2c: the package's own KA kernels, state-free ------------------------------------------------------------------
 
-include(joinpath(@__DIR__, "fixtures.jl"))     # Residual and LogitScale kernels, and SDPAOps (with `sdpa_ka!`)
+include(joinpath(@__DIR__, "..", "..", "fixtures.jl"))     # Residual and LogitScale kernels, and SDPAOps (with `sdpa_ka!`)
 
 # A flat entry for any KA kernel: the six context integers, then the kernel's own arguments unchanged
 # (`Val`s are ghost arguments: they stay in the Julia signature and leave the PTX one).

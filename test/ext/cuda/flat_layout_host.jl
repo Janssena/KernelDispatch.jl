@@ -1,6 +1,6 @@
 # The CUDA backend's flat KernelAbstractions layout, as far as it can be checked without a GPU: the hooks, the six
 # integers of KA's launch context, and the guard against binaries built before the layout was flat. Needs CUDA.jl
-# to be loadable (it is in the test environment), not a device. Run in its own process by test/cpu/cuda_flat.test.jl,
+# to be loadable (it is in the test environment), not a device. Run in its own process by test/ext/cuda/flat_layout.test.jl,
 # because loading CUDA.jl here would change what the CPU section's other tests see ("no GPU extension loaded").
 
 using Test, KernelDispatch, KernelAbstractions, CUDA

@@ -7,13 +7,13 @@
 # time (or, if the check did not exist, a wrong gradient).
 #
 # Runnable on its own:
-#     julia --project=test test/cpu/custom_call.test.jl
+#     julia --project=test test/ext/metal/custom_call.test.jl
 
 using Test, KernelDispatch, Reactant
 
 const RX = Base.get_extension(KernelDispatch, :KernelDispatchReactantExt)
 
-isdefined(@__MODULE__, :reverse_symbol) || include(joinpath(@__DIR__, "..", "ir_utils.jl"))   # reverse_symbol, reverse_signature
+isdefined(@__MODULE__, :reverse_symbol) || include(joinpath(@__DIR__, "..", "..", "ir_utils.jl"))   # reverse_symbol, reverse_signature
 
 emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none f(args...))
 
@@ -91,7 +91,7 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
     end
 
     @testset "custom_call dispatches on the backend" begin
-        # A backend without a method (ROCm) says so; CUDA has one (cpu/cuda_launch.test.jl).
+        # A backend without a method (ROCm) says so; CUDA has one (ext/cuda/launch_encoding.test.jl).
         @test_throws ArgumentError KernelDispatch.custom_call(KernelDispatch.ROCmBackendTag(),
             "_fwd", "/tmp/none.metallib", (), [(4,)], Any[]; grid=(1, 1, 1))
 

@@ -147,7 +147,7 @@ end
 # KA's launch context for a static workgroup size and a dynamic ND-range is six integers: the ND-range and the
 # block counts, as two `CartesianIndices`. Rebuilt from them here, with none of `KA.launch_config` / `partition`
 # (those have error paths, which a state-free device build cannot contain). Equal to what `KD.ka_context` builds,
-# type and bits; test/cpu/cuda_flat.test.jl checks that for the KA in use.
+# type and bits; test/ext/cuda/flat_layout.test.jl checks that for the KA in use.
 @inline function _rebuild_ctx(::Val{TG}, nd1::Int, nd2::Int, nd3::Int, b1::Int, b2::Int, b3::Int) where {TG}
     ND = KA.NDIteration
     iterspace = ND.NDRange{3,ND.DynamicSize,ND.StaticSize{(TG, 1, 1)}}(CartesianIndices((b1, b2, b3)), nothing)

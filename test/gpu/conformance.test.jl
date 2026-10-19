@@ -1,39 +1,17 @@
 # What any backend must do for an `:explicit`-ABI binary: the same checks against whichever backend is loaded
-# (Metal's `scale.metallib` fixture, CUDA's PTX/cubin from test/cuda_ptx.jl), through the public launch API.
-# A new backend is complete when it passes this file. The kernel is `scale(x, y, a, n)`: y[i] = a * x[i].
-# KA binaries, Enzyme and the ops have their own tests; this is the contract a backend extension implements.
+# (its `scale` fixture, from test/ext/<backend>/backend.jl), through the public launch API. A new backend is complete
+# when it passes this file. The kernel is `scale(x, y, a, n)`: y[i] = a * x[i]. KA binaries, Enzyme and the ops have
+# their own tests; this is the contract a backend extension implements.
 
 using Test, Random, KernelDispatch, Reactant
-isdefined(@__MODULE__, :scale_binaries) || GPU !== :cuda || include(joinpath(@__DIR__, "..", "cuda_ptx.jl"))
-Sys.isapple() && (isdefined(@__MODULE__, :mps_client) || include(joinpath(@__DIR__, "..", "mps_client.jl")))
 
 const KB = KernelDispatch
-
-"The backend's `:explicit` `scale` binaries, as `label => KernelBinary`."
-function conformance_binaries(dir)
-    if GPU === :metal
-        file = joinpath(dir, "scale.metallib")
-        cp(joinpath(@__DIR__, "..", "fixtures", "scale.metallib"), file)
-        return ["metallib" => KernelBinary(file; entry="scale", threadgroup=64)]
-    elseif GPU === :cuda
-        b = scale_binaries(dir)
-        return ["cubin" => b.cubin, "ptx" => b.ptx]
-    end
-    error("no conformance fixture for GPU backend $GPU")
-end
-
-# A file in a format the other vendors use, not this backend's.
-foreign_binary(dir) = (f = joinpath(dir, GPU === :metal ? "scale.cubin" : "scale.metallib");
-    write(f, UInt8[1, 2, 3]); KernelBinary(f; entry="scale", threadgroup=64))
-
-# The client a traced launch runs on, or nothing when this machine has none.
-traced_client() = GPU === :metal ? mps_client() : GPU === :cuda ? "gpu" : nothing
 
 scale(b, x, a=3.0f0) = Array(only(run_binary(b, x, OutArray(Float32, length(x)), a, Int32(length(x)); extent=length(x))))
 
 @testset "backend conformance: $GPU" begin
     dir = mktempdir()
-    bins = conformance_binaries(dir)
+    bins = explicit_binaries(dir)
     rng = Xoshiro(11)
 
     @testset "the backend is wired" begin
@@ -104,6 +82,7 @@ scale(b, x, a=3.0f0) = Array(only(run_binary(b, x, OutArray(Float32, length(x)),
                     f(x) = only(run_binary(loose(), x, OutArray(Float32, 100), 2.0f0, Int32(100); extent=100))
                     @test KB.traced_support(GPU_TAG, b) === nothing
                     @test Array(@jit f(Reactant.to_rarray(x))) ≈ 2.0f0 .* x
+                    @test occursin(TRACED_CALL_TARGET, repr(Reactant.@code_hlo optimize = false f(Reactant.to_rarray(x))))
                 end
             finally
                 Reactant.set_default_backend(prev)

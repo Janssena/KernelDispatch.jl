@@ -1,6 +1,6 @@
 # A staged smoke test of the CUDA backend, for running on an NVIDIA machine and pasting the output back:
 #
-#     julia --project=test test/cuda_smoke.jl
+#     julia --project=test test/ext/cuda/smoke.jl
 #
 # Every stage runs in its own `try`, prints PASS or FAIL with the full error and backtrace, and later
 # stages still run where they can. Nothing here is specific to this repository's test harness: it loads
@@ -16,9 +16,9 @@
 
 using Test, Random, InteractiveUtils, KernelDispatch, KernelAbstractions, CUDA, SDPAOps, Enzyme
 const GPU_PKG = CUDA
-include(joinpath(@__DIR__, "fixtures.jl"))
-include(joinpath(@__DIR__, "sdpa_helpers.jl"))
-include(joinpath(@__DIR__, "cuda_ptx.jl"))
+include(joinpath(@__DIR__, "..", "..", "fixtures.jl"))
+include(joinpath(@__DIR__, "..", "..", "sdpa_helpers.jl"))
+include(joinpath(@__DIR__, "ptx.jl"))
 
 const KD = KernelDispatch
 const EXT = Base.get_extension(KernelDispatch, :KernelDispatchCUDAExt)
@@ -249,7 +249,7 @@ stage("16 output-first KA kernels, traced (aliased outputs)") do
     # output as an aliased operand in the kernel's position. In a child process: an XLA fatal error costs one stage.
     code = quote
         using Random, KernelDispatch, KernelAbstractions, CUDA, Reactant
-        include($(joinpath(@__DIR__, "fixtures.jl")))
+        include($(joinpath(@__DIR__, "..", "..", "fixtures.jl")))
         Reactant.set_default_backend("gpu")
         rng = Xoshiro(7)
         register_logit_scale!(); register_residual!()

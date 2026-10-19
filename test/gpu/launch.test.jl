@@ -32,8 +32,8 @@ begin
         # the backend's kernel-state word(s) first. (Which slots each SDPAOps kernel binds: examples/SDPAOps/test.)
         n = 100
         q, k, v = (DeviceArray(rand(Float32, r, c)) for (r, c) in ((16, n), (16, 70), (8, 70)))
-        if GPU === :metal         # FlashAttn is a prebuilt `.metallib`
-            label, args, groups = only(KOM.record_bindings(() -> KOM.forward(SDPA(), FlashAttn(), q, k, v)))
+        for kern in prebuilt_sdpa_kernels()         # a binary shipped for this backend, if any (Metal: FlashAttn)
+            label, args, groups = only(KOM.record_bindings(() -> KOM.forward(SDPA(), kern, q, k, v)))
             @test label === :fwd
             @test groups == (cld(n, 64), 1, 1)
         end

@@ -14,7 +14,7 @@
 #     one in that order. A kernel's own parameter order is arbitrary (`f!(out, in...)`, outputs last, scalars between
 #     buffers), so every OUTPUT is also passed as an operand, a zero-filled array in the kernel's position, with its
 #     result aliased to it (`output_operand_aliases`): the buffers then arrive in the kernel's order, and the repeated
-#     result buffers after them go unused. Confirmed in every order by `test/cuda_probe_order.jl`; without the
+#     result buffers after them go unused. Confirmed in every order by `test/ext/cuda/probe_order.jl`; without the
 #     aliasing an output-first kernel is bound wrongly and silently (wrong values, no error).
 #
 # Note for Reactant's own client: its compile pipeline has a `raise_triton_custom_call` pass that rewrites a

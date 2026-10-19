@@ -1,28 +1,31 @@
-# Traced on the jax-mps Metal client: the SAME binaries the eager path launches, embedded as
-# `mps.metal_kernel_lib` custom calls, with the backward attached as the forward's reverse rule.
-# The forward of a real op (SDPAOps) traced is in gpu/sdpa.test.jl; here, what only the fixtures have: a
-# backward binary, autodiff refusal, and the binary-level launch features.
-#
-# Metal only: it is the one backend with a custom-call convention (jax-mps). Under any other backend a
-# traced launch fails with the "no custom_call" error (asserted device-free in cpu/inference.test.jl).
+# Traced, on the backend's own Reactant client (`traced_client()`: jax-mps on Metal when the plugin is found, Reactant's
+# CUDA client on CUDA): the SAME binaries the eager path launches, embedded as the backend's custom call. The forward of a
+# real op (SDPAOps) traced is in gpu/sdpa.test.jl; here, what only the fixtures have: a backward binary with two outputs,
+# autodiff refusal, a zero-filled output after the output-first KA kernels, and the binary-level launch features.
 
 using Test, Random, KernelDispatch, Reactant, Enzyme
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))
-Sys.isapple() && (isdefined(@__MODULE__, :mps_client) || include(joinpath(@__DIR__, "..", "mps_client.jl")))
 
-const _MPS = GPU === :metal ? mps_client() : nothing
+const _CLIENT = traced_client()
 
-if _MPS === nothing
-    @info "no jax-mps client (Metal only; set JAX_MPS_PLUGIN): skipping traced tests"
+if _CLIENT === nothing
+    @info "no traced client for $GPU (Metal needs the jax-mps plugin: JAX_MPS_PLUGIN): skipping traced tests"
 else
     prev = Reactant.XLA.default_backend()
-    Reactant.set_default_backend(_MPS)
+    Reactant.set_default_backend(_CLIENT)
     try
         local rng = Random.Xoshiro(2)
         isempty(KernelDispatch.variants(Residual(), ResidualKA())) && register_residual!()
         @assert current_kernel(:residual) === :ka
 
-        @testset "traced backward" begin
+        @testset "traced forward" begin
+            n = 64
+            x, y = randn(rng, Float32, n), randn(rng, Float32, n)
+            fwd(x, y) = KernelDispatch.forward(Residual(), ResidualKA(), x, y, 3.0f0)
+            @test Array(@jit fwd(Reactant.to_rarray(x), Reactant.to_rarray(y))) ≈ 3.0f0 .* x .+ y
+        end
+
+        @testset "traced backward (two outputs)" begin
             n = 64
             x, y, dz = randn(rng, Float32, n), randn(rng, Float32, n), randn(rng, Float32, n)
             g(x, y, dz) = KernelDispatch.backward(Residual(), ResidualKA(), (x, y, 3.0f0), x, dz)[1:2]
