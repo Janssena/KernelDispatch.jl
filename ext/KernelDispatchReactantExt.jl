@@ -83,7 +83,7 @@ function KD.execute(::AnyTracedRArray, l::KD.Launch)
             push!(layout, (:inout, (length(operands), length(shapes))))
             push!(operands, x)
             push!(shapes, size(x))
-            push!(eltypes, eltype(a.array))
+            push!(eltypes, Reactant.unwrapped_eltype(a.array))   # not `eltype`: that is a TracedRNumber
         elseif a isa AbstractArray
             push!(layout, (:in, length(operands)))
             push!(operands, _rev(_mat(a)))
