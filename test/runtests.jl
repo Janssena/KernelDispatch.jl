@@ -17,6 +17,11 @@
 # the variable is read here, not by Julia). Example:  JULIA_TEST_VERBOSE=true julia --project=test test/runtests.jl gpu
 
 using Test
+using KernelDispatch
+
+# The one alias every test file uses for the package (the files are `include`d here; standalone scripts such as
+# ext/cuda/smoke.jl and flat_layout_host.jl define their own).
+const KD = KernelDispatch
 
 const VERBOSE = lowercase(get(ENV, "JULIA_TEST_VERBOSE", "false")) in ("true", "1", "yes")
 
