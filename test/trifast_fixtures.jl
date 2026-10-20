@@ -1,12 +1,13 @@
 # The trifast fixtures (test/fixtures/trifast/, made by test/fixtures/make_trifast_fixture.py with real Triton on an NVIDIA
-# machine and committed): trifast's triangle-attention kernels (`_fwd`, `_bwd_q`, `_bwd_kv`, `_bwd_b`) compiled at several
+# machine and kept in the fixtures artifact, see fixture_root.jl): trifast's triangle-attention kernels (`_fwd`, `_bwd_q`, `_bwd_kv`, `_bwd_b`) compiled at several
 # (BLOCK_J, BLOCK_K, num_warps, num_stages) configs, the inputs, Triton's own outputs and a dense float64 torch reference.
 # `case.json` describes every instance: its grid and the arguments the COMPILED kernel takes, in order (so the tests need
 # no knowledge of trifast). Tensors are raw row-major files; Julia reads them with the dimensions reversed, which is the
 # same memory the kernel addresses with torch's strides.
 
-const TRIFAST_FIXTURES = get(ENV, "KD_TRIFAST_FIXTURES", joinpath(@__DIR__, "fixtures", "trifast"))
-have_trifast_fixtures() = isfile(joinpath(TRIFAST_FIXTURES, "case.json"))
+isdefined(@__MODULE__, :fixture_dir) || include(joinpath(@__DIR__, "fixture_root.jl"))
+const TRIFAST_FIXTURES = fixture_dir("trifast")        # the `trifast/` directory, or "" if there is none (see fixture_root.jl)
+have_trifast_fixtures() = !isempty(TRIFAST_FIXTURES) && isfile(joinpath(TRIFAST_FIXTURES, "case.json"))
 trifast_case() = KernelDispatch._json_parse(read(joinpath(TRIFAST_FIXTURES, "case.json"), String))
 
 # A tensor file as a Julia array (dimensions reversed from torch's).

@@ -1,0 +1,7 @@
+[kernel_dispatch_fixtures]
+git-tree-sha1 = "ee908f45aaf121998bf3a22c107d5fc091f91426"
+lazy = true
+
+    [[kernel_dispatch_fixtures.download]]
+    sha256 = "d68b525fdf7496bac1d79528817dc135474ee0c9ffe10a211a906d726fa61ab8"
+    url = "https://github.com/Janssena/KernelDispatch.jl/releases/download/fixtures-v1/kernel_dispatch_fixtures.tar.gz"

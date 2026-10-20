@@ -29,7 +29,7 @@ if GPU === :cuda
     # Every set of fixtures found (see triton_fixtures.jl): one per Triton version and element type. Kernels of one name from
     # different sets (the Float32 `scale_kernel` of Triton 3.2.0 and of 3.8.0, or of Float16) are different binaries launched
     # in this one process: XLA's handler would run the first one's code for all of them without the distinct module keys.
-    isempty(TRITON_SETS) && @info "no Triton fixtures in $TRITON_FIXTURES (make_triton_fixture.py): skipping"
+    isempty(TRITON_SETS) && @info "no Triton fixtures (see test/fixture_root.jl): skipping"
     for set in TRITON_SETS
         T = set.T
         let

@@ -11,13 +11,14 @@
 # (the PTX `.entry`'s parameters) is what a `forward` has to bind: Triton drops `constexpr` arguments and integers equal to 1, and
 # (depending on its version) adds hidden trailing pointers.
 #
-# `KD_TRITON_FIXTURES` moves the directory that holds `triton/` (default: test/fixtures). `KD_TRITON_DTYPES=Float16` and
-# `KD_TRITON_VERSIONS=3.8.0` (comma-separated) run only those: a failure that depends on which sets ran before it is a different bug
+# Where the `triton/` directory comes from (a local checkout of generated fixtures, `KD_FIXTURES`, or the downloaded artifact) is
+# decided in fixture_root.jl. `KD_TRITON_DTYPES=Float16` and `KD_TRITON_VERSIONS=3.8.0` (comma-separated) run only those: a failure that depends on which sets ran before it is a different bug
 # from one that does not.
 
 using BFloat16s: BFloat16
 
-const TRITON_FIXTURES = get(ENV, "KD_TRITON_FIXTURES", joinpath(@__DIR__, "fixtures"))
+isdefined(@__MODULE__, :fixture_dir) || include(joinpath(@__DIR__, "fixture_root.jl"))
+const TRITON_FIXTURES = fixture_dir("triton")          # the `triton/` directory, or "" if there is none
 const TRITON_DTYPES = (Float32, Float16, BFloat16)
 
 # What each Triton version we have fixtures for is KNOWN to do: the hidden trailing pointers it adds and whether its metadata
@@ -41,8 +42,8 @@ function triton_sets()
     want_dtypes = filter(!isempty, split(get(ENV, "KD_TRITON_DTYPES", ""), ','))
     want_versions = filter(!isempty, split(get(ENV, "KD_TRITON_VERSIONS", ""), ','))
     sets = NamedTuple[]
-    top = joinpath(TRITON_FIXTURES, "triton")
-    isdir(top) || return sets
+    isempty(TRITON_FIXTURES) && return sets
+    top = TRITON_FIXTURES
     dirs = [joinpath(top, v, p) for v in sort(readdir(top)) if isdir(joinpath(top, v)) for p in sort(readdir(joinpath(top, v)))]
     for d in dirs
         (isdir(d) && isfile(joinpath(d, "versions.txt"))) || continue

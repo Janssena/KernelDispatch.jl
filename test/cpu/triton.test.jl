@@ -58,8 +58,8 @@ end
 # --- against what real Triton compiled -----------------------------------------------------------------------------
 
 if !have_triton_fixtures()
-    @warn "no Triton fixtures in $TRITON_FIXTURES (run test/fixtures/make_triton_fixture.py on an NVIDIA machine): " *
-          "skipping the real-Triton tests"
+    @warn "no Triton fixtures (the artifact could not be fetched and test/fixtures/triton is absent; see test/fixture_root.jl, " *
+          "or make them with test/fixtures/make_triton_fixture.py on an NVIDIA machine): skipping the real-Triton tests"
 else
     float32_sets = filter(set -> set.T === Float32, TRITON_SETS)
     @testset "$(set.label): triton_binary and the compiled signature, $(k.name)" for set in float32_sets, k in triton_kernels(set)
@@ -190,8 +190,8 @@ end
 # --- trifast's kernels (test/fixtures/trifast/): the described call against the compiled kernels -------------------
 
 if !have_trifast_fixtures()
-    @warn "no trifast fixtures in $TRIFAST_FIXTURES (run test/fixtures/make_trifast_fixture.py on an NVIDIA machine): " *
-          "skipping them"
+    @warn "no trifast fixtures (see test/fixture_root.jl, or make them with test/fixtures/make_trifast_fixture.py on an " *
+          "NVIDIA machine): skipping them"
 else
     case = trifast_case()
     @testset "trifast: $(inst["name"])" for inst in case["instances"]
