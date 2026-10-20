@@ -10,8 +10,11 @@
 #   1 device                          5 explicit PTX, eager         9  SDPAOps (KA kernel), eager
 #   2 ka_compile names and builds     6 explicit PTX, traced        10 SDPAOps, traced
 #   3 a stale same-name build         7 flat KA binary, traced      11 Residual forward/backward + Enzyme
-#   4 mixed outputs (T + Float32)     8 a 2-byte scalar, traced     12 mismatched types: refused, and wrong when unchecked
+#   4 mixed outputs (T + Float32)     8 a 2-byte scalar, traced     10b mixed-type outputs, traced (isolates 10)
+#                                     12 mismatched types: refused, and wrong when unchecked
 #                                     (the scalar stays Float32 everywhere else)
+#
+# `HALF_SMOKE_ONLY=10,10b julia ... half_smoke.jl` runs just those stages.
 #
 # What to report back: the output from "summary" down, and for any FAIL the lines above it.
 
@@ -26,7 +29,11 @@ const RESULTS = Pair{String,Symbol}[]       # :pass, :fail or :skip
 
 check(cond, msg="check failed") = cond || error(msg)
 
+# `HALF_SMOKE_ONLY=10` (or `6,7`) runs just those stages.
+const ONLY = filter(!isempty, split(get(ENV, "HALF_SMOKE_ONLY", ""), ','))
+
 function stage(f, name)
+    isempty(ONLY) || first(split(name)) in ONLY || return
     print("\n── ", name, " ")
     try
         r = f()
@@ -53,8 +60,14 @@ function child(code::Expr, what)
     text = String(take!(out))
     println("\n", join(filter(l -> startswith(l, "  "), split(text, "\n")), "\n"))
     ok = success(proc) && occursin("RESULT ok", text)
-    ok || foreach(l -> println("      ", first(l, 220)),
-        first(filter(l -> occursin(r"error|Error|ERROR|No registered|custom call|FATAL|RESULT|2-byte", l), split(text, "\n")), 10))
+    if !ok
+        # Say how the child ended and show the tail of everything it wrote: a crash inside XLA prints no "error" line.
+        println("      child exit code ", proc.exitcode, ", signal ", proc.termsignal)
+        log = joinpath(tempdir(), "half_smoke_child.log")
+        write(log, text)
+        println("      full child output: ", log)
+        foreach(l -> println("      ", first(l, 220)), last(split(text, "\n"), 40))
+    end
     check(ok, what)
 end
 
@@ -319,6 +332,44 @@ stage("10 SDPAOps at 16 bits, traced") do
         end
         println(all(oks) ? "RESULT ok" : "RESULT wrong values")
     end, "a traced half-precision SDPAOps launch did not produce the host result")
+end
+
+# Isolates stage 10: a traced launch with two outputs of different types (T and Float32), the second used or dropped.
+stage("10b mixed-type outputs, traced (a T output next to a Float32 one)") do
+    child(quote
+        using Random, KernelDispatch, KernelAbstractions, CUDA, Reactant, BFloat16s
+        Reactant.set_default_backend("gpu")
+        off = Reactant.CompileOptions(; raise_triton_custom_call=false)
+        @kernel unsafe_indices = true function mixed!(o, l, x, a::Float32, n::Int32, ::Val{TG}) where {TG}
+            i = (@index(Group, Linear) - 1) * TG + @index(Local, Linear)
+            if i <= n
+                v = a * Float32(unsafe_load(x, i))
+                unsafe_store!(o, v, i)
+                unsafe_store!(l, v * v, i)
+            end
+        end
+        be = KernelDispatch.device_backend()
+        oks = Bool[]
+        for T in $(collect(HALF_TYPES))
+            n = 64
+            b = ka_compile(be, mixed!, (Vector{T}, Vector{Float32}, Vector{T}, Float32, Int32, Val{64}); tg=64, name="m10b", dir=mktempdir())
+            file, entry, sig = b.file, b.entry, b.signature
+            mk() = KernelBinary(file; entry, threadgroup=64, abi=:ka, params=(; ka_layout="flat"), signature=sig)
+            both(x) = run_binary(mk(), OutArray(eltype(x), 64), OutArray(Float32, 64), x, 2.0f0, Int32(64), Val(64); extent=64)
+            first_only(x) = first(both(x))
+            x = T.(randn(Float32, n))
+            println("  ", T, ": tracing with both outputs used")
+            o, l = Reactant.@jit compile_options = off both(Reactant.to_rarray(x))
+            good1 = eltype(o) === T && eltype(l) === Float32 && Float32.(Array(o)) == 2 .* Float32.(x)
+            println("  ", T, ": both used ", good1)
+            println("  ", T, ": tracing with the second output dropped")
+            o2 = Reactant.@jit compile_options = off first_only(Reactant.to_rarray(x))
+            good2 = eltype(o2) === T && Float32.(Array(o2)) == 2 .* Float32.(x)
+            println("  ", T, ": second dropped ", good2)
+            push!(oks, good1 && good2)
+        end
+        println(all(oks) ? "RESULT ok" : "RESULT wrong values")
+    end, "a traced launch with outputs of two types failed")
 end
 
 stage("11 Residual forward and backward at 16 bits, eager, with the Enzyme rule") do
