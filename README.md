@@ -74,6 +74,7 @@ On CUDA only the binary changes: `KernelBinary("flash.cubin"; entry="sdpa_fwd", 
 | [Registering kernels](https://janssena.github.io/KernelDispatch.jl/dev/tutorials/2-registering-kernels/) | prebuilt binaries, KernelAbstractions kernels, `build!` |
 | [Forward, backward, Enzyme](https://janssena.github.io/KernelDispatch.jl/dev/tutorials/3-forward-backward-enzyme/) | custom `forward`/`backward` and gradients |
 | [Triton kernels](https://janssena.github.io/KernelDispatch.jl/dev/tutorials/4-triton-kernels/) | Triton to `.metallib`, or a Triton `.cubin` on NVIDIA |
+| [Signatures](https://janssena.github.io/KernelDispatch.jl/dev/signatures/) | the argument types of a binary: what to declare, in which order, and the check |
 | [Backends](https://janssena.github.io/KernelDispatch.jl/dev/backends/) | what runs where, how a launch goes, what is verified and the limits |
 | [API reference](https://janssena.github.io/KernelDispatch.jl/dev/api/) | |
 
@@ -157,8 +158,11 @@ other types is refused, with the argument named. For a prebuilt binary, declare 
 KernelBinary("scale.metallib"; signature=(Vector{Float32}, Float32, Int32))
 ```
 
-Without a signature the first launch warns once and prints the one that fits. `signature=false` declares the binary
-unchecked, and `check_types=false` skips the check for one launch.
+The signature has one type per argument `call_binary` binds, in that order (outputs included, `Val`s left out): `Vector{T}`
+for any array or `OutArray(T, ...)`, and the exact type for a scalar (`Int32`, not `Int`). Without a signature the first
+launch warns once and prints the one that fits. `signature=false` declares the binary unchecked, and `check_types=false`
+skips the check for one launch. The [Signatures](https://janssena.github.io/KernelDispatch.jl/dev/signatures/) page has
+the details.
 
 ## Automatic differentiation
 
