@@ -77,6 +77,28 @@ function _zlib_stored(data::AbstractVector{UInt8})
     return take!(out)
 end
 
+# XLA's kernel-call handler keeps ONE loaded module per (kernel name, dynamic shared memory) for the life of the process,
+# whatever image the next call sends: a second, different image launched under the same name and the same shared memory
+# runs the FIRST one's code. Seen with Triton kernels compiled for Float32, Float16 and BFloat16, which are all called
+# `scale_kernel` with `shared = 0` (wrong values, no error), while the same kernels in separate processes were right.
+# The name is the image's own symbol and cannot change, so the later image asks for a few more bytes of dynamic shared memory
+# (4 per image already using the name): a distinct key, a kernel that never touches the extra bytes, and the first image
+# unchanged. Keyed by the image's contents, so a binary always gets the same size and a re-registered one reuses it.
+const _MODULE_KEYS = Dict{Tuple{String,Int},UInt64}()      # (name, shared memory asked for) -> the image's hash
+const _MODULE_KEYS_LOCK = ReentrantLock()
+
+function _distinct_shared_mem(entry::AbstractString, shared_mem::Integer, image)
+    h = hash(image)
+    lock(_MODULE_KEYS_LOCK) do
+        s = Int(shared_mem)
+        while true
+            claimed = get!(_MODULE_KEYS, (String(entry), s), h)
+            claimed == h && return s
+            s += 4
+        end
+    end
+end
+
 """
     _kernel_call_proto(; entry, image, is_ptx, num_warps, shared_mem, grid, params, name) -> Vector{UInt8}
 
@@ -196,9 +218,10 @@ function KD.custom_call(::KD.CUDABackendTag, entry, path, operands, result_shape
 
     params, buffers, aliases = _cuda_launch_operands(layout, operands, result_shapes, result_eltypes)
 
+    image = read(path)
     proto = _kernel_call_proto(; 
-        entry, image=read(path), is_ptx=lowercase(splitext(path)[2]) == ".ptx",
-        num_warps=threadgroup ÷ 32, shared_mem, grid, params, name=entry
+        entry, image, is_ptx=lowercase(splitext(path)[2]) == ".ptx",
+        num_warps=threadgroup ÷ 32, shared_mem=_distinct_shared_mem(entry, shared_mem, image), grid, params, name=entry
     )
 
     opaque = String(_zlib_stored(proto))

@@ -178,3 +178,17 @@ end
         @test KernelDispatch.traced_support(tag, b) === nothing
     end
 end
+
+@testset "two images under one name get distinct module keys (XLA caches a module per name and shared memory)" begin
+    d = RXC._distinct_shared_mem
+    a, b, c = UInt8[1, 2, 3], UInt8[4, 5, 6], UInt8[7, 8, 9]
+    @test d("kn_a", 0, a) == 0                  # the first image under a key keeps its size
+    @test d("kn_a", 0, a) == 0                  # and so does a repeat of it
+    @test d("kn_a", 0, b) == 4                  # another image of that name and size asks for a few bytes more
+    @test d("kn_a", 0, b) == 4 && d("kn_a", 0, a) == 0     # stable
+    @test d("kn_a", 0, c) == 8
+    @test d("kn_a", 4, a) == 12                 # an image that really uses 4 bytes does not take over b's key
+    @test d("kn_b", 0, b) == 0                  # another name is independent
+    @test d("kn_a", 16, b) == 16                # so is another size
+    @test d("kn_c", 0, copy(a)) == 0 && d("kn_c", 0, copy(a)) == 0      # identical bytes are the same image
+end
