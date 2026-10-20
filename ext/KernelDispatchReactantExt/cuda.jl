@@ -182,8 +182,8 @@ The CUDA embedding: a `stablehlo.custom_call` to a `triton_kernel_call` handler 
 operand in the kernel's own parameter position, so the kernel's buffer order is unrestricted.
 """
 function KD.custom_call(::KD.CUDABackendTag, entry, path, operands, result_shapes, layout;
-        grid, threadgroup, result_eltypes=ntuple(Returns(Float32), length(result_shapes)),
-        shared_mem::Integer=0, reverse=nothing, active_operands=nothing
+        grid, threadgroup, result_eltypes, shared_mem::Integer=0, reverse=nothing, 
+        active_operands=nothing
 )
     (threadgroup % 32 == 0 && 0 < threadgroup <= 1024) || throw(ArgumentError(
         "threadgroup $threadgroup: XLA's kernel-call handler launches `num_warps * 32` threads per block, " *
@@ -195,6 +195,7 @@ function KD.custom_call(::KD.CUDABackendTag, entry, path, operands, result_shape
         "the operand indices `active_operands` refers to"))
 
     params, buffers, aliases = _cuda_launch_operands(layout, operands, result_shapes, result_eltypes)
+
     proto = _kernel_call_proto(; 
         entry, image=read(path), is_ptx=lowercase(splitext(path)[2]) == ".ptx",
         num_warps=threadgroup ÷ 32, shared_mem, grid, params, name=entry

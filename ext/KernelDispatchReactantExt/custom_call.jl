@@ -19,7 +19,7 @@ function _aliases_attr(aliases, nresults::Integer)
 end
 
 """
-    _embed_custom_call(call_target_name, operands, result_shapes; backend_config,
+    _embed_custom_call(call_target_name, operands, result_shapes; backend_config, result_eltypes,
         api_version=1, reverse=nothing, active_operands=nothing, label=call_target_name) -> results
 
 Emit a `stablehlo.custom_call` naming `call_target_name`, with the given `backend_config` string
@@ -31,10 +31,10 @@ call, or a user's own, attaches through the same seam by passing a different `ca
 expect it pre-serialised, since the JSON schema is entirely the target's own convention to define) or, for
 the typed-FFI convention (`api_version = 4`), a dictionary of attributes.
 
-`result_eltypes` is the element type of each result, one per entry of `result_shapes`; it
-defaults to all `Float32`. The declared type IS the buffer the runtime allocates, so it must match
-what the kernel writes: a kernel storing `Float16` into a result declared `Float32` fills half the
-bytes and is read back as garbage, with no error.
+`result_eltypes` is the element type of each result, one per entry of `result_shapes`. It is required and has
+no default: the declared type IS the buffer the runtime allocates, so it must match what the kernel writes, and
+a kernel storing `Float16` into a result declared `Float32` fills half the bytes and is read back as garbage,
+with no error. (`execute` passes the element type of each `OutArray`.)
 
 `output_operand_aliases` is a list of `(result, operand)` pairs (0-based) whose buffers are shared.
 
@@ -47,7 +47,7 @@ every kernel in a `.metallib` under that one target, for instance).
 function _embed_custom_call(call_target_name::AbstractString, operands, result_shapes;
         backend_config, api_version::Integer=1, reverse=nothing,
         active_operands=nothing, label::AbstractString=call_target_name,
-        result_eltypes=ntuple(Returns(Float32), length(result_shapes)),
+        result_eltypes,
         output_operand_aliases=Tuple{Int,Int}[]
 )
     length(result_eltypes) == length(result_shapes) || throw(ArgumentError(

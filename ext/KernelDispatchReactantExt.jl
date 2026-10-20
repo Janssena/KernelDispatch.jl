@@ -94,8 +94,11 @@ function KD.execute(::AnyTracedRArray, l::KD.Launch)
     b = l.binary
     # A Triton binary's hidden trailing pointers: null words after the arguments (see `triton_binary`).
     append!(layout, ((:bytes, _le_bytes(UInt64(0))) for _ in 1:KD.trailing_pointers(b)))
+    
     results = KD.custom_call(be, b.entry, b.file, Tuple(operands), shapes, layout;
-        grid=l.grid, threadgroup=b.threadgroup, shared_mem=b.shared_mem, result_eltypes=Tuple(eltypes))
+        grid=l.grid, threadgroup=b.threadgroup, shared_mem=b.shared_mem, result_eltypes=Tuple(eltypes)
+    )
+    
     return Tuple(map(_rev, results))
 end
 

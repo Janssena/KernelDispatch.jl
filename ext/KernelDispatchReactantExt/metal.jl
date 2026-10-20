@@ -2,7 +2,7 @@ _le_bytes(x) = "[" * join(Int.(reinterpret(UInt8, [x])), ",") * "]"
 
 """
     _metal_kernel_lib(name, libpath, operands, result_shapes, layout; grid,
-        result_eltypes=all Float32) -> results
+        result_eltypes) -> results
 
 [`_embed_custom_call`](@ref) targeting `"mps.metal_kernel_lib"`, jax-mps' dispatcher for a named
 kernel inside a pre-compiled `.metallib`. `layout` is the kernel's argument table in order, as
@@ -15,7 +15,7 @@ by `threadgroup_position_in_grid`.
 """
 function _metal_kernel_lib(name, libpath, operands, result_shapes, layout; grid,
         threadgroup=1024, reverse=nothing, active_operands=nothing, shared_mem::Integer=0,
-        result_eltypes=ntuple(Returns(Float32), length(result_shapes))
+        result_eltypes
 )
     any(e -> first(e) === :inout, layout) && throw(ArgumentError(
         "an `InOutArray` argument cannot be traced on Metal: jax-mps' kernel call cannot alias a result to an operand " *
