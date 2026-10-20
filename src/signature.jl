@@ -28,7 +28,7 @@ const _TYPE_TOKENS = Dict{Symbol,String}(
 function _known_token(T)
     T isa DataType || return nothing
     t = get(_TYPE_TOKENS, nameof(T), nothing)
-    t === nothing && return nothing
+    isnothing(t) && return nothing
     return nameof(parentmodule(T)) in (:Core, :Base, :BFloat16s) ? t : nothing
 end
 
@@ -49,7 +49,7 @@ _sanitize(s::AbstractString) = replace(s, r"[^A-Za-z0-9]" => "")
 # spelling (so `Complex{Float32}` and `Complex{Float64}` never share a file).
 function _file_type(T)
     t = _known_token(T)
-    t === nothing || return t
+    isnothing(t) || return t
     return _sanitize(lowercase(String(nameof(T)))) * string(hash(_canonical(T)); base=16, pad=16)[1:8]
 end
 
@@ -58,12 +58,8 @@ _file_token(::Type{A}) where {A<:AbstractArray} = _file_type(eltype(A))
 _file_token(::Type{Val{x}}) where {x} = "v" * _sanitize(string(x))
 _file_token(::Type{T}) where {T} = _file_type(T) * "s"          # a scalar: `s` apart from a buffer of the same type
 
-"""
-    bound_tokens(argtypes::Tuple) -> Tuple{Vararg{String}}
-
-The signature of an argument-type list as [`ka_compile`](@ref) takes it: a token per argument, `Val{x}` (which takes no
-slot at launch) left out.
-"""
+# The signature of an argument-type list as `ka_compile` takes it: a token per argument, `Val{x}` (which takes no slot at
+# launch) left out.
 bound_tokens(argtypes::Tuple) = Tuple(_arg_token(T) for T in argtypes if !(T <: Val))
 
 # What `KernelBinary(...; signature=)` accepts: `nothing` (unknown), `false` (unchecked), a tuple of tokens, or a tuple
@@ -102,17 +98,13 @@ _actual_tokens(args::Tuple, extras::Tuple) =
 
 # --- the check ---------------------------------------------------------------------------------------------
 
-"""
-    check_signature(backend, b::KernelBinary, args, extras)
-
-Refuse, with the position and both types, a launch whose arguments are not the ones `b` was compiled for
-(`b.signature`). A binary whose signature is unknown (`nothing`) is not checked; on a device, the first launch of
-it warns once and suggests the `signature=` that fits. Done once per [`prepare_launch`](@ref), eager or traced.
-"""
+# Refuse, with the position and both types, a launch whose arguments are not the ones `b` was compiled for (`b.signature`).
+# A binary whose signature is unknown (`nothing`) is not checked; on a device, the first launch of it warns once and
+# suggests the `signature=` that fits. Done once per `prepare_launch`, eager or traced.
 function check_signature(be::KernelBackend, b::KernelBinary, args::Tuple, extras::Tuple)::Nothing
     sig = getfield(b, :signature)
     sig === false && return nothing
-    if sig === nothing
+    if isnothing(sig)
         be isa GPUBackend && warn_unknown_signature(b, args, extras)
         return nothing
     end

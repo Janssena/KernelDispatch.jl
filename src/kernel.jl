@@ -439,7 +439,7 @@ function list_kernels(op)
             for (kn, k) in sort(collect(get(KERNELS, opname(o), Dict{Symbol,AbstractKernel}())); by=first)]
 end
 
-_selected(op::AbstractKernelOp) = (k = _override(op); k === nothing ? default_kernel(op) : k)
+_selected(op::AbstractKernelOp) = (k = _override(op); isnothing(k) ? default_kernel(op) : k)
 
 """
     selected_kernel(op) -> kernel

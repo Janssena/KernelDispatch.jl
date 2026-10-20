@@ -188,7 +188,7 @@ function _json_parse(s::AbstractString)
             j > i || error("unexpected character '$c' at byte $i")
             tok = str[i:j-1]; i = j
             x = something(tryparse(Int, tok), tryparse(Float64, tok), Some(nothing))
-            x === nothing && error("bad number `$tok`")
+            isnothing(x) && error("bad number `$tok`")
             return x
         end
     end

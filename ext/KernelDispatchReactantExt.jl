@@ -69,7 +69,7 @@ function KD.execute(::AnyTracedRArray, l::KD.Launch)
     # Before any argument is converted: a binary the backend cannot launch from a trace should say so, not fail
     # on the first value that has no byte form.
     reason = KD.traced_support(be, l.binary)
-    reason === nothing || throw(ArgumentError(reason))
+    isnothing(reason) || throw(ArgumentError(reason))
     layout = Any[(:bytes, _le_bytes(p)) for p in l.prelude]
     operands, shapes, eltypes = Any[], Any[], DataType[]
     for a in (l.args..., l.extras...)
