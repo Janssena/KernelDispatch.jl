@@ -104,6 +104,7 @@ end
 
 function __init__()
     KD._TRACING[] = () -> Reactant.within_compile()
+    KD._UNTRACED[] = f -> Reactant.call_with_native(f)
     return nothing
 end
 

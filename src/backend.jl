@@ -98,6 +98,17 @@ tracing() = _TRACING[]()
 const _TRACING = Ref{Function}(() -> false)
 
 """
+    untraced(f)
+
+Call `f()` outside the tracer's reach: inside a Reactant trace its calls run natively, not rewritten for tracing; anywhere
+else it is just `f()`. For work that is plain compilation and file output, which a trace must not interpret: building a
+variant on demand ([`build!`](@ref)) compiles a GPU kernel, and CUDA.jl's compiler crashed the process when asked to do
+that from inside a trace. (Device work that the graph should contain does not belong here.)
+"""
+untraced(f) = tracing() ? _UNTRACED[](f) : f()
+const _UNTRACED = Ref{Function}(f -> f())
+
+"""
     cache_root() -> String
 
 Root of KernelDispatch' on-disk cache, overridable with `KERNELDISPATCH_CACHE`. An op's own registry lives

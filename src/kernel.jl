@@ -223,7 +223,11 @@ extras(::AbstractKernelOp, ::AbstractKernel, ::KernelBinary) = ()
 """`nearest(op, kernel, keys, key)`: a registered key to use when `key` has no exact variant, or `nothing`."""
 nearest(::AbstractKernelOp, ::AbstractKernel, keys, key) = nothing
 
-"""`build!(op, kernel, key)`: create the variant for `key` (a lazy tune) via [`add_variant!`](@ref). Default: nothing."""
+"""
+`build!(op, kernel, key)`: create the variant for `key` (a lazy tune) via [`add_variant!`](@ref). 
+Default: nothing. When a trace asks for a variant that does not exist yet, it runs outside the tracer 
+([`untraced`](@ref)).
+"""
 build!(::AbstractKernelOp, ::AbstractKernel, key) = nothing
 
 """`source_tag(kernel) -> String`: a manifest recorded with another tag is ignored. Default `""`."""
@@ -474,7 +478,7 @@ function variant(op::AbstractKernelOp, k::AbstractKernel, key::Tuple; target::Ab
     vs = variants(op, k; target)
     v = _lookup(op, k, vs, key)
     isnothing(v) || return v
-    build!(op, k, key)
+    untraced(() -> build!(op, k, key))          # a build compiles a kernel: not something to run inside a trace
     v = _lookup(op, k, vs, key)
     isnothing(v) || return v
     throw(ArgumentError("kernel `:$(kernelname(k))` of op `:$(opname(op))` has no variant for key " *

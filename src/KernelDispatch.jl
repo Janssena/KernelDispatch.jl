@@ -29,7 +29,7 @@ export call_binary, run_binary, prepare_launch, time_binary, ka_compile, triton_
 public opname, default_kernel, @default_kernel, default_candidates, kernelname, host, forward, backward,
     variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, execute,
     Launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,
-    GPUBackend, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, cache_root, ka_binary_cache_dir,
+    GPUBackend, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, untraced, cache_root, ka_binary_cache_dir,
     current_target, device_available, device_zeros, max_threads, device_backend
 
 """
