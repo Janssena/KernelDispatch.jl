@@ -73,14 +73,15 @@ else
             @test b.shared_mem == meta["shared"]
             @test KD.binary_format(b) === image
             @test b.target == (image === :cubin ? "sm_" * string(meta["target"]["arch"]) : "")   # PTX is portable
-            @test b.params.triton_version == meta["triton_version"]
+            # Triton 3.8.0 writes its version into the metadata; 3.2.0 does not (and has no scratch-size entries either).
+            @test haskey(meta, "triton_version") ? b.params.triton_version == meta["triton_version"] : !haskey(b.params, :triton_version)
         end
 
-        # The hidden trailing pointers: the metadata has both scratch entries, and the compiled kernel ends in exactly
-        # that many pointer parameters after the arguments Triton kept.
+        # The hidden trailing pointers: one for each scratch entry the metadata has (both in Triton 3.8.0, none in 3.2.0), and
+        # the compiled kernel ends in exactly that many pointer parameters after the arguments Triton kept.
         b = triton_binary(p.json)
         nptr = KD.trailing_pointers(b)
-        @test nptr == b.params.scratch_pointers == 2
+        @test nptr == b.params.scratch_pointers == count(key -> haskey(meta, key), ("global_scratch_size", "profile_scratch_size"))
         @test length(kinds) == length(k.args) + nptr
         @test kinds[1:length(k.args)] == k.args                    # what `forward` binds, in this order
         @test all(==(:ptr), kinds[end-nptr+1:end])                 # what the launcher appends
@@ -102,6 +103,9 @@ else
     @testset "what is refused, from the real metadata edited" begin
         p = triton_paths("scale_kernel")
         meta = read(p.json, String)
+        # The metadata edited: a key set to a value, added if this Triton's metadata lacks it (3.2.0 has no scratch entries).
+        setkey(m, key, val) = occursin("\"$key\"", m) ? replace(m, Regex("\"$key\":\\s*[^,}\\s]+") => "\"$key\": $val") :
+                              replace(m, "{" => "{\"$key\": $val,"; count=1)
         function refused(edit)
             dir = mktempdir()
             write(joinpath(dir, "scale_kernel.json"), edit(meta))
@@ -109,11 +113,11 @@ else
             return err(() -> triton_binary(joinpath(dir, "scale_kernel.json")))
         end
         says(e, needle) = e isa ArgumentError && occursin(needle, e.msg)
-        @test says(refused(m -> replace(m, r"\"global_scratch_size\":\s*0" => "\"global_scratch_size\": 64")), "scratch")
-        @test says(refused(m -> replace(m, r"\"profile_scratch_size\":\s*0" => "\"profile_scratch_size\": 64")), "scratch")
-        @test says(refused(m -> replace(m, r"\"num_ctas\":\s*1" => "\"num_ctas\": 2")), "clusters")
+        @test says(refused(m -> setkey(m, "global_scratch_size", 64)), "scratch")
+        @test says(refused(m -> setkey(m, "profile_scratch_size", 64)), "scratch")
+        @test says(refused(m -> setkey(m, "num_ctas", 2)), "clusters")
         @test says(refused(m -> replace(m, "\"cuda\"" => "\"hip\"")), "hip")
-        @test says(refused(m -> replace(m, r"\"num_warps\":\s*\d+" => "\"num_warps\": null")), "num_warps")
+        @test says(refused(m -> setkey(m, "num_warps", "null")), "num_warps")
         @test says(refused(m -> "[1, 2]"), "metadata")
         @test says(refused(m -> "{not json"), "JSON")
         @test err(() -> triton_binary(joinpath(mktempdir(), "missing.json"))) isa ArgumentError
@@ -125,7 +129,7 @@ else
         b = triton_binary(triton_paths("block_sum_kernel").json)
         @test b.shared_mem > 0                                         # a real, nonzero case
         v = add_variant!(TritonOp(), TritonK(), (:f32,); fwd=b)
-        @test v[:fwd].shared_mem == b.shared_mem && v[:fwd].abi === :triton && v[:fwd].params.scratch_pointers == 2
+        @test v[:fwd].shared_mem == b.shared_mem && v[:fwd].abi === :triton && v[:fwd].params.scratch_pointers == b.params.scratch_pointers
         delete!(KD.VARIANTS, (TritonOp, TritonK, KD.current_target()))
         again = KD.load_manifest(TritonOp(), TritonK())[(:f32,)][:fwd]
         @test again == v[:fwd]

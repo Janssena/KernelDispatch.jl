@@ -11,7 +11,11 @@
 using BFloat16s: BFloat16
 
 const TRITON_FIXTURES = get(ENV, "KD_TRITON_FIXTURES", joinpath(@__DIR__, "fixtures", "triton"))
-const TRITON_DTYPES = (Float32, Float16, BFloat16)
+# `KD_TRITON_DTYPES=Float16` (or `Float16,BFloat16`) runs only those: the fixtures are compiled and launched per dtype, and a
+# failure that depends on which dtypes ran before it is a different bug from one that does not.
+const TRITON_DTYPES = let all = (Float32, Float16, BFloat16), want = filter(!isempty, split(get(ENV, "KD_TRITON_DTYPES", ""), ','))
+    isempty(want) ? all : Tuple(T for T in all if string(nameof(T)) in want)
+end
 
 # The directory of the fixtures made for element type `T`: `triton/`, `triton_float16/`, `triton_bfloat16/`.
 triton_root(::Type{T}=Float32) where {T} =
