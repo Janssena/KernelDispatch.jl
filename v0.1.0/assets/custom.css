@@ -1,0 +1,4 @@
+/* A larger logo in the sidebar: Documenter caps it at 6rem; the sidebar is 18rem wide with 1rem of padding each side. */
+#documenter .docs-sidebar .docs-logo > img {
+    max-height: 12rem;
+}
