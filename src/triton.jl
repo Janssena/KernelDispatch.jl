@@ -25,10 +25,10 @@ may rewrite or clear them.) Register it like any binary:
   `extent` the grid of programs, which is how Triton is launched.
 - `scratch_pointers`: how many hidden trailing pointer parameters the compiled kernel takes after its own.
   Read from the metadata: one for each of the `global_scratch_size` and `profile_scratch_size` entries it has (both
-  are present in Triton 3.8.0, whose kernels end in exactly two pointers). Pass it to override for another version.
+  are present in Triton 3.8.0, whose kernels end in exactly two pointers; Triton 3.2.0 has neither and none). Pass it to override for another version.
 
 The kernel's entry, `threadgroup` (`num_warps` times the target's warp size) and `shared_mem` come from the metadata,
-which must have the keys Triton 3.8.0 writes (`name`, `num_warps`, `target` with `backend`, `arch` and `warp_size`).
+which must have the keys Triton 3.2.0 and 3.8.0 write (`name`, `num_warps`, `target` with `backend`, `arch` and `warp_size`).
 What cannot be launched is refused here, with an explanation: a non-NVIDIA target, `num_ctas` above 1 (thread-block
 clusters), and a kernel that needs global scratch memory (`global_scratch_size > 0`).
 

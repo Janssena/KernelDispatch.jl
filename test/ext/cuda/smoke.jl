@@ -202,7 +202,7 @@ end
 stage("14 Triton ABI: shared memory and trailing pointers") do
     # The scale kernel dressed as a Triton one: it declares no scratch parameters, so the two trailing null
     # pointers and the dynamic shared memory only show that a launch with them is accepted and still correct.
-    # (A real Triton kernel needs Python: its output is test/fixtures/triton/, run by test/ext/cuda/triton.test.jl.)
+    # (A real Triton kernel needs Python: its output is test/fixtures/triton/<version>/float32/, run by test/ext/cuda/triton.test.jl.)
     bins = scale_binaries(mktempdir())
     x = randn(rng, Float32, 100)
     for shared in (0, 1024, 60 * 1024), (kind, bin) in pairs(bins)      # 60 KB is above the 48 KB default

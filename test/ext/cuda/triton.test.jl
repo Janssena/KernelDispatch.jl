@@ -1,4 +1,5 @@
-# Kernels compiled by real Triton (test/fixtures/triton/, Triton 3.8.0, made by test/fixtures/make_triton_fixture.py),
+# Kernels compiled by real Triton (test/fixtures/triton/<version>/<precision>/, one set per Triton version and element type, made by
+# test/fixtures/make_triton_fixture.py),
 # launched through KernelDispatch on CUDA, eagerly and from a Reactant trace, and compared with Triton's OWN output for
 # the same inputs (saved by the script) and with a host formula. They exercise what a stand-in kernel cannot: the real
 # metadata, dynamic shared memory (`block_sum_kernel`: `shared > 0`), the two hidden trailing pointers, arguments Triton
@@ -8,7 +9,7 @@
 # old values, eagerly and in a trace) and `atomic_sum_kernel` adds atomically into one slot of a zero-filled output.
 
 using Test, KernelDispatch, Reactant, BFloat16s
-isdefined(@__MODULE__, :TRITON_KERNELS) || include(joinpath(@__DIR__, "..", "..", "triton_fixtures.jl"))
+isdefined(@__MODULE__, :TRITON_SETS) || include(joinpath(@__DIR__, "..", "..", "triton_fixtures.jl"))
 isdefined(@__MODULE__, :ELEMENTWISE_RTOL) || include(joinpath(@__DIR__, "..", "..", "precision.jl"))
 
 # The calls: the compiled signature, in order. `extent` is the grid (tile = 1). The output is allocated in the inputs' type;
@@ -25,15 +26,18 @@ triton_atomic_call(b, x) = only(run_binary(b, x, OutArray(eltype(x), 1; zero=tru
 # Everything below is local to a `let`: this file is included into `Main`, where names such as `inputs` (a helper of
 # sdpa_helpers.jl) and `host` (imported from KernelDispatch) already exist.
 if GPU === :cuda
-    # Every element type whose fixtures exist: `triton/` (Float32), `triton_float16/`, `triton_bfloat16/`.
-    for T in TRITON_DTYPES
-        have_triton_fixtures(T) || (@info "no Triton fixtures for $T in $(triton_root(T)) (make_triton_fixture.py $(lowercase(string(nameof(T))))): skipping"; continue)
+    # Every set of fixtures found (see triton_fixtures.jl): one per Triton version and element type. Kernels of one name from
+    # different sets (the Float32 `scale_kernel` of Triton 3.2.0 and of 3.8.0, or of Float16) are different binaries launched
+    # in this one process: XLA's handler would run the first one's code for all of them without the distinct module keys.
+    isempty(TRITON_SETS) && @info "no Triton fixtures in $TRITON_FIXTURES (make_triton_fixture.py): skipping"
+    for set in TRITON_SETS
+        T = set.T
         let
-            kernels = triton_kernels(T)
+            kernels = triton_kernels(set)
             files = Dict("scale_kernel" => ("x",), "block_sum_kernel" => ("x",), "strided_axpy" => ("x", "y"),
                 "accumulate_kernel" => ("y_init", "x"), "atomic_sum_kernel" => ("x",))
-            data = Dict(k.name => Tuple(load_words(triton_paths(k.name, T).dir, f, T) for f in files[k.name]) for k in kernels)
-            expected_of(name) = load_words(triton_paths(name, T).dir, "expected", T)
+            data = Dict(k.name => Tuple(load_words(triton_paths(k.name, set).dir, f, T) for f in files[k.name]) for k in kernels)
+            expected_of(name) = load_words(triton_paths(name, set).dir, "expected", T)
             call_of = Dict("scale_kernel" => triton_scale_call, "block_sum_kernel" => triton_blocksum_call,
                 "strided_axpy" => triton_axpy_call, "accumulate_kernel" => triton_acc_call,
                 "atomic_sum_kernel" => triton_atomic_call)
@@ -50,8 +54,8 @@ if GPU === :cuda
             tol_host(name) = REDUCTION_RTOL[T]
             sig(k) = triton_signature(k, T)
 
-            @testset "eager, $T: $(k.name), $image" for k in kernels, image in (:cubin, :ptx)
-                p = triton_paths(k.name, T)
+            @testset "eager, $(set.label): $(k.name), $image" for k in kernels, image in (:cubin, :ptx)
+                p = triton_paths(k.name, set)
                 b = triton_binary(p.json; image=getfield(p, image), signature=sig(k))
                 @test b.signature == KD.bound_tokens(sig(k))
                 args = map(DeviceArray, data[k.name])
@@ -73,8 +77,8 @@ if GPU === :cuda
             prev = Reactant.XLA.default_backend()
             Reactant.set_default_backend(traced_client())
             try
-                @testset "traced, $T: $(k.name), $image" for k in kernels, image in (:cubin, :ptx)
-                    p = triton_paths(k.name, T)
+                @testset "traced, $(set.label): $(k.name), $image" for k in kernels, image in (:cubin, :ptx)
+                    p = triton_paths(k.name, set)
                     s = triton_spec(triton_binary(p.json; image=getfield(p, image), signature=sig(k)))
                     args = map(a -> Reactant.to_rarray(a), data[k.name])
                     call = call_of[k.name]

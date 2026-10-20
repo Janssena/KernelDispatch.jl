@@ -2,7 +2,7 @@
 #
 #   - what needs no Triton at all: the JSON reader (generic JSON, no claim about Triton's schema), the `shared_mem`
 #     field, and the `:triton` ABI's prelude and grid;
-#   - what is checked against kernels REAL Triton compiled (test/fixtures/triton/, Triton 3.8.0 on an NVIDIA A40, made by
+#   - what is checked against kernels REAL Triton compiled (test/fixtures/triton/<version>/<precision>/, Triton 3.2.0 and 3.8.0 on an NVIDIA A40, made by
 #     test/fixtures/make_triton_fixture.py and committed): `triton_binary` on the real metadata, the compiled signature
 #     against what a `forward` binds, the refusals (made by editing the real metadata), and the manifest round trip. This
 #     half is skipped, with a warning, when the fixtures are absent.
@@ -10,7 +10,7 @@
 # The launches themselves are test/ext/cuda/triton.test.jl (eager and traced, against Triton's own output).
 
 using Test, KernelDispatch, TOML, BFloat16s
-isdefined(@__MODULE__, :TRITON_KERNELS) || include(joinpath(@__DIR__, "..", "triton_fixtures.jl"))
+isdefined(@__MODULE__, :TRITON_SETS) || include(joinpath(@__DIR__, "..", "triton_fixtures.jl"))
 isdefined(@__MODULE__, :TRIFAST_FIXTURES) || include(joinpath(@__DIR__, "..", "trifast_fixtures.jl"))
 
 struct TritonOp <: AbstractKernelOp end
@@ -61,10 +61,12 @@ if !have_triton_fixtures()
     @warn "no Triton fixtures in $TRITON_FIXTURES (run test/fixtures/make_triton_fixture.py on an NVIDIA machine): " *
           "skipping the real-Triton tests"
 else
-    @testset "triton_binary and the compiled signature: $(k.name)" for k in TRITON_KERNELS
-        p = triton_paths(k.name)
+    float32_sets = filter(set -> set.T === Float32, TRITON_SETS)
+    @testset "$(set.label): triton_binary and the compiled signature, $(k.name)" for set in float32_sets, k in triton_kernels(set)
+        p = triton_paths(k.name, set)
         meta = KD._json_parse(read(p.json, String))
         kinds = ptx_param_kinds(read(p.ptx, String))
+        known = get(TRITON_KNOWN, set.version, nothing)
 
         for image in (:cubin, :ptx)
             b = triton_binary(p.json; image=getfield(p, image))
@@ -75,20 +77,25 @@ else
             @test b.target == (image === :cubin ? "sm_" * string(meta["target"]["arch"]) : "")   # PTX is portable
             # Triton 3.8.0 writes its version into the metadata; 3.2.0 does not (and has no scratch-size entries either).
             @test haskey(meta, "triton_version") ? b.params.triton_version == meta["triton_version"] : !haskey(b.params, :triton_version)
+            known === nothing || @test haskey(meta, "triton_version") == known.version_in_metadata
         end
 
-        # The hidden trailing pointers: one for each scratch entry the metadata has (both in Triton 3.8.0, none in 3.2.0), and
-        # the compiled kernel ends in exactly that many pointer parameters after the arguments Triton kept.
+        # The hidden trailing pointers: one for each scratch entry the metadata has, and the compiled kernel ends in exactly
+        # that many pointer parameters after the arguments Triton kept. For a version we know, also the number it is known to add.
         b = triton_binary(p.json)
         nptr = KD.trailing_pointers(b)
         @test nptr == b.params.scratch_pointers == count(key -> haskey(meta, key), ("global_scratch_size", "profile_scratch_size"))
+        known === nothing || @test nptr == known.hidden_pointers
         @test length(kinds) == length(k.args) + nptr
         @test kinds[1:length(k.args)] == k.args                    # what `forward` binds, in this order
         @test all(==(:ptr), kinds[end-nptr+1:end])                 # what the launcher appends
     end
 
+    # The tests below take one Float32 set: the refusals edit its real metadata, the manifest round trip persists its binary.
+    set0 = first(float32_sets)
+
     @testset "overrides and the choice of image" begin
-        p = triton_paths("scale_kernel")
+        p = triton_paths("scale_kernel", set0)
         @test endswith(triton_binary(p.json).file, ".cubin")                       # the cubin beside the JSON, by default
         @test endswith(triton_binary(p.json; image=p.ptx).file, ".ptx")
         @test triton_binary(p.json; tile=(8, 1)).tile == (8, 1, 1)
@@ -101,7 +108,7 @@ else
     end
 
     @testset "what is refused, from the real metadata edited" begin
-        p = triton_paths("scale_kernel")
+        p = triton_paths("scale_kernel", set0)
         meta = read(p.json, String)
         # The metadata edited: a key set to a value, added if this Triton's metadata lacks it (3.2.0 has no scratch entries).
         setkey(m, key, val) = occursin("\"$key\"", m) ? replace(m, Regex("\"$key\":\\s*[^,}\\s]+") => "\"$key\": $val") :
@@ -126,7 +133,7 @@ else
     end
 
     @testset "persisted with the binary: shared_mem, abi, scratch pointers" begin
-        b = triton_binary(triton_paths("block_sum_kernel").json)
+        b = triton_binary(triton_paths("block_sum_kernel", set0).json)
         @test b.shared_mem > 0                                         # a real, nonzero case
         v = add_variant!(TritonOp(), TritonK(), (:f32,); fwd=b)
         @test v[:fwd].shared_mem == b.shared_mem && v[:fwd].abi === :triton && v[:fwd].params.scratch_pointers == b.params.scratch_pointers
@@ -143,18 +150,15 @@ else
     end
 end
 
-# --- every element type the fixtures were made for ----------------------------------------------------------------------
-# `triton/` is Float32; `triton_float16/` and `triton_bfloat16/` come from `make_triton_fixture.py float16|bfloat16` (the atomic
-# kernel is Float32 only). Triton compiles a different binary per dtype, so each is read like the Float32 ones: the compiled
-# signature has the same shape (a `*bf16` is still a `.ptr`), and a `signature=` declared from it is what a launch is checked against.
+# --- every set of fixtures: each Triton version and precision --------------------------------------------------------------
+# `triton/<version>/float32|float16|bfloat16/`, from `make_triton_fixture.py [float16|bfloat16]` (the atomic kernel is Float32 only).
+# Triton compiles a different binary per dtype, so each is read like the Float32 ones: the compiled signature has the same shape (a
+# `*bf16` is still a `.ptr`), and a `signature=` declared from it is what a launch is checked against.
 
-for T in TRITON_DTYPES
-    if !have_triton_fixtures(T)
-        T === Float32 || @info "no Triton fixtures for $T in $(triton_root(T)): skipping them"
-        continue
-    end
-    @testset "$T: the compiled signature and a declared type signature, $(k.name)" for k in triton_kernels(T)
-        p = triton_paths(k.name, T)
+for set in TRITON_SETS
+    T = set.T
+    @testset "$(set.label): the compiled signature and a declared type signature, $(k.name)" for k in triton_kernels(set)
+        p = triton_paths(k.name, set)
         kinds = ptx_param_kinds(read(p.ptx, String))
         b = triton_binary(p.json)
         nptr = KD.trailing_pointers(b)

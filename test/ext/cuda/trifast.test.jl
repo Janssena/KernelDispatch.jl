@@ -9,7 +9,7 @@
 # first or last, a mask indexed per batch item (`pid // H`) and a sequence length (40) that no block size divides.
 
 using Test, KernelDispatch, Reactant, LinearAlgebra
-isdefined(@__MODULE__, :TRITON_KERNELS) || include(joinpath(@__DIR__, "..", "..", "triton_fixtures.jl"))
+isdefined(@__MODULE__, :TRITON_SETS) || include(joinpath(@__DIR__, "..", "..", "triton_fixtures.jl"))
 isdefined(@__MODULE__, :TRIFAST_FIXTURES) || include(joinpath(@__DIR__, "..", "..", "trifast_fixtures.jl"))
 
 if GPU === :cuda && have_trifast_fixtures()

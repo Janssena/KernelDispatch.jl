@@ -4,9 +4,13 @@
 Run on a machine with an NVIDIA GPU, Triton and a CUDA build of torch (torch is only used to launch the kernels once
 and to produce Triton's own reference outputs):
 
-    python3 test/fixtures/make_triton_fixture.py              # float32 -> test/fixtures/triton/
-    python3 test/fixtures/make_triton_fixture.py float16      # -> test/fixtures/triton_float16/
-    python3 test/fixtures/make_triton_fixture.py bfloat16     # -> test/fixtures/triton_bfloat16/   (needs sm_80 or newer)
+    python3 test/fixtures/make_triton_fixture.py              # float32 -> test/fixtures/triton/<triton version>/float32/
+    python3 test/fixtures/make_triton_fixture.py float16      # -> test/fixtures/triton/<triton version>/float16/
+    python3 test/fixtures/make_triton_fixture.py bfloat16     # -> test/fixtures/triton/<triton version>/bfloat16/   (needs sm_80 or newer)
+
+The first level is the Triton that is installed (`triton/3.2.0/`, `triton/3.8.0/`): Triton changes what it writes (the metadata, the
+hidden trailing pointers) between versions, and the tests run every set they find, so keep one set per version. Run the script
+once per Triton environment and dtype. The tests read the version and dtype from each directory's `versions.txt`.
 
 The half-precision runs make the tensors in that dtype and keep the scalars `fp32` (Python floats), exactly what a Julia
 `forward` binds. The binaries differ per dtype, so each has its own directory. The atomic kernel is float32 only (atomic adds
@@ -43,7 +47,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DTYPE = sys.argv[1] if len(sys.argv) > 1 else "float32"
 if DTYPE not in ("float32", "float16", "bfloat16"):
     sys.exit(f"dtype must be float32, float16 or bfloat16, got {DTYPE!r}")
-OUT = os.path.join(HERE, "triton" if DTYPE == "float32" else f"triton_{DTYPE}")
 # Before Triton is imported: its cache is where the artifacts are read from, and a fresh one has only ours.
 CACHE = tempfile.mkdtemp(prefix="kd_triton_cache_")
 os.environ["TRITON_CACHE_DIR"] = CACHE
@@ -52,6 +55,8 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import triton  # noqa: E402
 import triton.language as tl  # noqa: E402
+
+OUT = os.path.join(HERE, "triton", triton.__version__, DTYPE)
 
 if not torch.cuda.is_available():
     sys.exit("torch cannot see a CUDA device: this script needs the NVIDIA GPU")

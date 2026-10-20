@@ -1,7 +1,7 @@
 # Debugging the traced launch of a Triton kernel in half precision: runs one fixture kernel from the cubin and from the PTX,
 # several times and in a fixed order, in a fresh process, and prints how each result differs from Triton's own output.
 #
-#     julia --project=test test/ext/cuda/triton_half_debug.jl float16 scale_kernel
+#     julia --project=test test/ext/cuda/triton_half_debug.jl float16 scale_kernel [3.2.0]
 #     julia --project=test test/ext/cuda/triton_half_debug.jl float32 scale_kernel      # the same for the dtype that passes
 #
 # Paste the output. What it separates: does the first traced launch go wrong whatever the image, or only the cubin; does a
@@ -14,10 +14,12 @@ include(joinpath(@__DIR__, "..", "..", "precision.jl"))
 dtype = get(ARGS, 1, "float16")
 kname = get(ARGS, 2, "scale_kernel")
 T = Dict("float32" => Float32, "float16" => Float16, "bfloat16" => BFloat16)[dtype]
-k = only(filter(k -> k.name == kname, triton_kernels(T)))
+version = get(ARGS, 3, nothing)
+set = first(filter(s -> s.T === T && (version === nothing || s.version == version), TRITON_SETS))
+k = only(filter(k -> k.name == kname, triton_kernels(set)))
 files = Dict("scale_kernel" => ("x",), "block_sum_kernel" => ("x",), "strided_axpy" => ("x", "y"),
     "accumulate_kernel" => ("y_init", "x"), "atomic_sum_kernel" => ("x",))
-p = triton_paths(kname, T)
+p = triton_paths(kname, set)
 data = Tuple(load_words(p.dir, f, T) for f in files[kname])
 expected = load_words(p.dir, "expected", T)
 
@@ -30,7 +32,7 @@ calls = Dict(
 call = calls[kname]
 
 Reactant.set_default_backend("gpu")
-println("kernel $kname, $T, Triton ", strip(split(read(joinpath(triton_root(T), "versions.txt"), String), '\n')[1]))
+println("kernel $kname, ", set.label)
 for (label, image) in (("cubin #1", :cubin), ("ptx   #1", :ptx), ("cubin #2", :cubin), ("ptx   #2", :ptx), ("cubin #3", :cubin))
     s = triton_spec(triton_binary(p.json; image=getfield(p, image), signature=triton_signature(k, T)))
     args = map(Reactant.to_rarray, data)
