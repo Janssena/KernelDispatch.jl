@@ -6,13 +6,6 @@
 # the token of its element type, a scalar the token of its type after `s:`:
 #
 #     (Vector{Float16}, Vector{Float16}, Float32, Int32)   ->   ("f16", "f16", "s:f32", "s:i32")
-#
-# A token is lossless: the common numeric types have a short one (`f32`, `bf16`, `i32`), every other type is spelled out
-# with its module and parameters (`Base.Complex{f32}`), so `ComplexF32` and `ComplexF64`, or two modules' `Params`, differ.
-#
-# `ka_compile` records it from its `argtypes`; for any other binary the user may declare it (`signature=`).
-
-# --- tokens ----------------------------------------------------------------------------------------------
 
 # The token of an argument type in a signature (`Val`s never reach it).
 _arg_token(::Type{A}) where {A<:AbstractArray} = _type_token(eltype(A))
@@ -77,8 +70,6 @@ _as_signature(x) = throw(ArgumentError(
 _loaded_signature(x::AbstractVector) = Tuple(String.(x))
 _loaded_signature(x) = x === false ? false : nothing
 
-# --- the arguments of a launch -----------------------------------------------------------------------------
-
 # The token of an argument as `call_binary` binds it, or `nothing` for one that takes no slot. A traced array's
 # element type is Reactant's `TracedRNumber{T}`: `realtype` takes the `T` out.
 _actual_token(::OutArray{T}) where {T} = _type_token(T)
@@ -94,9 +85,7 @@ _declared_type(x::AbstractArray) = Vector{realtype(eltype(x))}
 _declared_type(x) = realtype(typeof(x))
 
 _actual_tokens(args::Tuple, extras::Tuple) =
-    String[t for t in (_actual_token(a) for a in (args..., extras...)) if t !== nothing]
-
-# --- the check ---------------------------------------------------------------------------------------------
+    String[t for t in (_actual_token(a) for a in (args..., extras...)) if !isnothing(t)]
 
 # Refuse, with the position and both types, a launch whose arguments are not the ones `b` was compiled for (`b.signature`).
 # A binary whose signature is unknown (`nothing`) is not checked; on a device, the first launch of it warns once and
@@ -142,5 +131,6 @@ const _WARNED_LOCK = ReentrantLock()
         "arguments are not checked. This launch binds $suggestion; if that is what the binary was compiled for, pass " *
         "`signature=$suggestion` to `KernelBinary` (or `triton_binary`), or `signature=false` to silence this. " *
         "`Val`s take no slot and are left out."
+    
     return nothing
 end
