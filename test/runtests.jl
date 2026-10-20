@@ -25,7 +25,7 @@ const KD = KernelDispatch
 
 const VERBOSE = lowercase(get(ENV, "JULIA_TEST_VERBOSE", "false")) in ("true", "1", "yes")
 
-const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "binary_checks", "signature", "triton"]
+const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "binary_checks", "signature", "untraced", "triton"]
 const EXT_HOST_SECTIONS = ["custom_call", "cuda_launch", "cuda_flat"]      # ext/, no device needed
 const GPU_SECTIONS = ["conformance", "launch", "gpu_inference", "gpu_sdpa", "mismatch", "traced"]
 const EXT_GPU_SECTIONS = ["ext_cuda"]                                       # ext/, needs that backend's device
@@ -76,6 +76,10 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
 
         cpu("signature") && @testset verbose = VERBOSE "argument types against the binary's signature" begin
             include("cpu/signature.test.jl")
+        end
+
+        cpu("untraced") && @testset verbose = VERBOSE "builds triggered from a trace" begin
+            include("cpu/untraced.test.jl")
         end
 
         cpu("triton") && @testset verbose = VERBOSE "Triton binaries (reader, ABI, real-Triton fixtures)" begin

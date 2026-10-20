@@ -10,7 +10,7 @@
 #   1 device                          5 explicit PTX, eager         9  SDPAOps (KA kernel), eager
 #   2 ka_compile names and builds     6 explicit PTX, traced        10 SDPAOps, traced
 #   3 a stale same-name build         7 flat KA binary, traced      11 Residual forward/backward + Enzyme
-#   4 mixed outputs (T + Float32)     8 a 2-byte scalar, traced     10b mixed-type outputs, traced (isolates 10)
+#   4 mixed outputs (T + Float32)     8 a 2-byte scalar, traced     10b mixed-type outputs, traced     10c = 10 with the builds done first
 #                                     12 mismatched types: refused, and wrong when unchecked
 #                                     (the scalar stays Float32 everywhere else)
 #
@@ -310,7 +310,9 @@ stage("9 SDPAOps (KA kernel) at 16 bits, eager") do
     end
 end
 
-stage("10 SDPAOps at 16 bits, traced") do
+# `warm`: build the variants with an eager call first. Without it the trace itself asks for the missing variant, whose build
+# (a GPU compile) must run outside the tracer: stage 10 checks that, 10c is the same with the builds done beforehand.
+function sdpa_traced_child(warm::Bool)
     child(quote
         using Random, KernelDispatch, SDPAOps, CUDA, Reactant, BFloat16s
         const KD = KernelDispatch
@@ -323,7 +325,12 @@ stage("10 SDPAOps at 16 bits, traced") do
         oks = Bool[]
         for T in $(collect(HALF_TYPES))
             q, k, v = inputs(rng, 16, 100, 70, 8, T)
+            if $warm
+                KernelDispatch.forward(SDPA(), SDPAKA(), CuArray(q), CuArray(k), CuArray(v))
+                println("  ", T, ": variant built eagerly")
+            end
             f(q, k, v) = KernelDispatch.forward(SDPA(), SDPAKA(), q, k, v)
+            println("  ", T, ": tracing")
             o = Array(Reactant.@jit compile_options = off f(map(Reactant.to_rarray, (q, k, v))...))
             err = maxrelerr(o, sdpa_reference(q, k, v))
             good = eltype(o) === T && err <= REDUCTION_RTOL[T]
@@ -332,6 +339,14 @@ stage("10 SDPAOps at 16 bits, traced") do
         end
         println(all(oks) ? "RESULT ok" : "RESULT wrong values")
     end, "a traced half-precision SDPAOps launch did not produce the host result")
+end
+
+stage("10 SDPAOps at 16 bits, traced (the variants are built from inside the trace)") do
+    sdpa_traced_child(false)
+end
+
+stage("10c SDPAOps at 16 bits, traced (the variants are built eagerly first)") do
+    sdpa_traced_child(true)
 end
 
 # Isolates stage 10: a traced launch with two outputs of different types (T and Float32), the second used or dropped.
