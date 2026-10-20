@@ -9,7 +9,7 @@
 #
 # The launches themselves are test/ext/cuda/triton.test.jl (eager and traced, against Triton's own output).
 
-using Test, KernelDispatch, TOML
+using Test, KernelDispatch, TOML, BFloat16s
 isdefined(@__MODULE__, :TRITON_KERNELS) || include(joinpath(@__DIR__, "..", "triton_fixtures.jl"))
 isdefined(@__MODULE__, :TRIFAST_FIXTURES) || include(joinpath(@__DIR__, "..", "trifast_fixtures.jl"))
 
@@ -136,6 +136,46 @@ else
         delete!(only(only(raw["variant"])["binary"]), "shared_mem")
         open(io -> TOML.print(io, raw), path, "w")
         @test KD.load_manifest(TritonOp(), TritonK())[(:f32,)][:fwd].shared_mem == 0
+    end
+end
+
+# --- every element type the fixtures were made for ----------------------------------------------------------------------
+# `triton/` is Float32; `triton_float16/` and `triton_bfloat16/` come from `make_triton_fixture.py float16|bfloat16` (the atomic
+# kernel is Float32 only). Triton compiles a different binary per dtype, so each is read like the Float32 ones: the compiled
+# signature has the same shape (a `*bf16` is still a `.ptr`), and a `signature=` declared from it is what a launch is checked against.
+
+for T in TRITON_DTYPES
+    if !have_triton_fixtures(T)
+        T === Float32 || @info "no Triton fixtures for $T in $(triton_root(T)): skipping them"
+        continue
+    end
+    @testset "$T: the compiled signature and a declared type signature, $(k.name)" for k in triton_kernels(T)
+        p = triton_paths(k.name, T)
+        kinds = ptx_param_kinds(read(p.ptx, String))
+        b = triton_binary(p.json)
+        nptr = KD.trailing_pointers(b)
+        @test length(kinds) == length(k.args) + nptr
+        @test kinds[1:length(k.args)] == k.args
+        @test all(==(:ptr), kinds[end-nptr+1:end])
+
+        # Declared from those kinds, the signature is what a launch is checked against (host arrays: the check does not need a device).
+        sig = triton_signature(k, T)
+        typed = triton_binary(p.json; signature=sig)
+        @test typed.signature == KD.bound_tokens(sig)
+        arg(kind, E) = kind === :ptr ? zeros(E, 8) : kind === :f32 ? 1.0f0 : kind === :u32 ? Int32(1) : Int64(1)
+        good = [arg(a, T) for a in k.args]
+        @test KD.prepare_launch(typed, good...; extent=1) isa KD.Launch
+        other = T === Float32 ? Float16 : Float32
+        i = findfirst(==(:ptr), k.args)
+        bad = [arg(a, a === :ptr ? other : T) for a in k.args]
+        e = err(() -> KD.prepare_launch(typed, bad...; extent=1))
+        @test e isa ArgumentError && occursin("compiled for", e.msg) && occursin("argument $i", e.msg)
+        # a scalar of the wrong width is refused too (the PTX `.u32` is an Int32 here, not an Int64)
+        j = findfirst(a -> a === :u32, k.args)
+        if j !== nothing
+            wide = copy(good); wide[j] = Int64(1)
+            @test err(() -> KD.prepare_launch(typed, wide...; extent=1)) isa ArgumentError
+        end
     end
 end
 
