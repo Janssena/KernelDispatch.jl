@@ -154,7 +154,7 @@ end
     # Binaries were copied into the kernel's directory.
     @test all(b -> startswith(b.file, KD.cache_dir(Residual())), [v[:fwd] for v in values(vs)])
     # A package's own subdirectory beside the binaries survives re-registration (only files are pruned).
-    own = joinpath(KD.cache_dir(Residual()), "other", "calibration")
+    own = joinpath(KD.kernel_dir(Residual(), Other()), "calibration")      # wherever this device's binaries live
     mkpath(own); write(joinpath(own, "x.toml"), "a = 1")
     add_variant!(Residual(), Other(), (:Float32, 64);
         fwd=KernelBinary(fake_bin("f64b"); threadgroup=32, params=(; tg=32, rows=64), tile=32))
@@ -175,11 +175,11 @@ end
     @test KD.variant(Residual(), Other(), (:Float32, 64))[:fwd].abi === :explicit
     @test KD.variant(Residual(), Other(), (:Float32, 256))[:fwd].target == "sm_80"
     @test KD.variant(Residual(), Other(), (:Float32, 64))[:fwd].target == ""
-    mtext = read(joinpath(KD.cache_dir(Residual()), "other", "manifest.toml"), String)
+    mtext = read(KD.manifest_path(Residual(), Other()), String)
     @test occursin("format_version = 3", mtext) && occursin("abi = \"ka\"", mtext) && !occursin("is_ka", mtext)
 
     # A manifest from before `tile` existed loads with the default, one item per thread.
-    path = joinpath(KD.cache_dir(Residual()), "other", "manifest.toml")
+    path = KD.manifest_path(Residual(), Other())
     write(path, join(filter(l -> !occursin(r"^\s*tile\s*=", l), readlines(path)), "\n"))
     empty!(KD.variants(Residual(), Other()))
     register_kernel!(Residual(), Other())
@@ -211,34 +211,37 @@ end
 end
 
 @testset "per-target directories" begin
-    @test KD.current_target() == ""                       # no device backend here
+    # Whatever device this process loaded (none, Metal: no target; CUDA: its architecture) names the default directories.
+    t = KD.current_target()
     r, o = Residual(), Other()
-    @test KD.kernel_dir(r, o) == KD.kernel_dir(r, o; target="") == joinpath(KD.cache_dir(r), "other")
-    @test KD.kernel_dir(r, o; target="sm_80") == joinpath(KD.cache_dir(r), "sm_80", "other")
-    @test KD.ka_binary_cache_dir() == joinpath(KD.cache_root(), "ka")
-    @test KD.ka_binary_cache_dir("sm_80") == joinpath(KD.cache_root(), "ka", "sm_80")
+    @test KD.kernel_dir(r, o) == KD.kernel_dir(r, o; target=t)
+    @test KD.kernel_dir(r, o; target="") == joinpath(KD.cache_dir(r), "other")
+    @test KD.kernel_dir(r, o; target="tgt_a") == joinpath(KD.cache_dir(r), "tgt_a", "other")
+    @test KD.ka_binary_cache_dir() == (isempty(t) ? joinpath(KD.cache_root(), "ka") : joinpath(KD.cache_root(), "ka", t))
+    @test KD.ka_binary_cache_dir("") == joinpath(KD.cache_root(), "ka")
+    @test KD.ka_binary_cache_dir("tgt_a") == joinpath(KD.cache_root(), "ka", "tgt_a")
 
     # Variants for two architectures live apart: separate tables, directories and manifests.
     key = (:Float32, 4096)
-    b80 = KernelBinary(fake_bin("t80"); threadgroup=32, target="sm_80")
-    b90 = KernelBinary(fake_bin("t90"); threadgroup=32, target="sm_90")
-    KD._add_variant!(r, o, key, (; fwd=b80), "sm_80")
-    KD._add_variant!(r, o, key, (; fwd=b90), "sm_90")
-    v80, v90 = KD.variant(r, o, key; target="sm_80"), KD.variant(r, o, key; target="sm_90")
-    @test v80[:fwd].target == "sm_80" && v90[:fwd].target == "sm_90"
-    @test dirname(v80[:fwd].file) == KD.kernel_dir(r, o; target="sm_80")
-    @test dirname(v90[:fwd].file) == KD.kernel_dir(r, o; target="sm_90")
-    @test isfile(KD.manifest_path(r, o; target="sm_80")) && isfile(KD.manifest_path(r, o; target="sm_90"))
+    b_a = KernelBinary(fake_bin("t80"); threadgroup=32, target="tgt_a")
+    b_b = KernelBinary(fake_bin("t90"); threadgroup=32, target="tgt_b")
+    KD._add_variant!(r, o, key, (; fwd=b_a), "tgt_a")
+    KD._add_variant!(r, o, key, (; fwd=b_b), "tgt_b")
+    v_a, v_b = KD.variant(r, o, key; target="tgt_a"), KD.variant(r, o, key; target="tgt_b")
+    @test v_a[:fwd].target == "tgt_a" && v_b[:fwd].target == "tgt_b"
+    @test dirname(v_a[:fwd].file) == KD.kernel_dir(r, o; target="tgt_a")
+    @test dirname(v_b[:fwd].file) == KD.kernel_dir(r, o; target="tgt_b")
+    @test isfile(KD.manifest_path(r, o; target="tgt_a")) && isfile(KD.manifest_path(r, o; target="tgt_b"))
     @test !haskey(KD.variants(r, o), key)                  # the default target is untouched
 
     # And reload separately from their manifests.
-    empty!(KD.variants(r, o; target="sm_80")); empty!(KD.variants(r, o; target="sm_90"))
-    @test KD.load_manifest(r, o; target="sm_80")[key][:fwd].file == v80[:fwd].file
-    @test KD.load_manifest(r, o; target="sm_90")[key][:fwd].file == v90[:fwd].file
+    empty!(KD.variants(r, o; target="tgt_a")); empty!(KD.variants(r, o; target="tgt_b"))
+    @test KD.load_manifest(r, o; target="tgt_a")[key][:fwd].file == v_a[:fwd].file
+    @test KD.load_manifest(r, o; target="tgt_b")[key][:fwd].file == v_b[:fwd].file
 
     # Re-registering under one target prunes only that target's files.
-    KD._add_variant!(r, o, key, (; fwd=KernelBinary(fake_bin("t80b"); threadgroup=32, target="sm_80")), "sm_80")
-    @test isfile(v90[:fwd].file)
+    KD._add_variant!(r, o, key, (; fwd=KernelBinary(fake_bin("t80b"); threadgroup=32, target="tgt_a")), "tgt_a")
+    @test isfile(v_b[:fwd].file)
 end
 
 @testset "host path" begin

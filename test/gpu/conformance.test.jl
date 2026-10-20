@@ -59,7 +59,7 @@ scale(b, x, a=3.0f0) = Array(only(run_binary(b, x, OutArray(Float32, length(x)),
         @test e isa ArgumentError && occursin(":no_such_abi", e.msg)                  # an ABI nothing implements
         if !isempty(KD.target_id(GPU_TAG))                                            # architecture-specific devices
             for (label, b) in bins
-                wrong = KernelBinary(b; target="sm_20")
+                wrong = KernelBinary(b; target="sm_20", signature=false)     # the architecture is what is asked, not the arguments
                 ok = KD.binary_format(b) === :ptx                                    # PTX is portable
                 e = try prepare_launch(wrong, DeviceArray(rand(Float32, 4)); extent=4); nothing catch e; e end
                 @test ok ? e === nothing : (e isa ArgumentError && occursin("built for sm_20", e.msg))

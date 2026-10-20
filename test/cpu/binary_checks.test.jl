@@ -35,7 +35,8 @@ KD.backend_of(::FakeCuArray) = KD.CUDABackendTag()
 end
 
 @testset "target architectures" begin
-    @test KD.target_id(KD.CUDABackendTag()) == ""        # no extension loaded here: nothing to ask
+    # Without the CUDA extension there is no device to ask; with it (a CUDA machine running the GPU section) it is the device's.
+    @test KD.target_id(KD.CUDABackendTag()) == (:cuda in KD.LOADED_BACKENDS ? KD.current_target() : "")
     @test KD.cuda_sm_compatible("", "sm_90")              # portable
     @test KD.cuda_sm_compatible("sm_80", "sm_80")
     @test KD.cuda_sm_compatible("sm_80", "sm_86")         # same major, newer minor
