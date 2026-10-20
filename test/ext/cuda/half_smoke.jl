@@ -66,7 +66,15 @@ function child(code::Expr, what)
         log = joinpath(tempdir(), "half_smoke_child.log")
         write(log, text)
         println("      full child output: ", log)
-        foreach(l -> println("      ", first(l, 220)), last(split(text, "\n"), 40))
+        lines = split(text, "\n")
+        # A crash starts with a "signal (11)" line and the frames nearest the fault; the tail only has the callers.
+        i = findfirst(l -> occursin(r"signal \(\d+\)|Segmentation|Stack dump|Check failed|terminate called", l), lines)
+        if i !== nothing
+            println("      --- the start of the crash report ---")
+            foreach(l -> println("      ", first(l, 220)), lines[max(1, i - 3):min(end, i + 25)])
+            println("      --- the end of the output ---")
+        end
+        foreach(l -> println("      ", first(l, 220)), last(lines, 40))
     end
     check(ok, what)
 end
@@ -312,7 +320,7 @@ end
 
 # `warm`: build the variants with an eager call first. Without it the trace itself asks for the missing variant, whose build
 # (a GPU compile) must run outside the tracer: stage 10 checks that, 10c is the same with the builds done beforehand.
-function sdpa_traced_child(warm::Bool)
+function sdpa_traced_child(warm::Bool, types=HALF_TYPES)
     child(quote
         using Random, KernelDispatch, SDPAOps, CUDA, Reactant, BFloat16s
         const KD = KernelDispatch
@@ -323,7 +331,7 @@ function sdpa_traced_child(warm::Bool)
         off = Reactant.CompileOptions(; raise_triton_custom_call=false)
         rng = Xoshiro(3)
         oks = Bool[]
-        for T in $(collect(HALF_TYPES))
+        for T in $(collect(types))
             q, k, v = inputs(rng, 16, 100, 70, 8, T)
             if $warm
                 KernelDispatch.forward(SDPA(), SDPAKA(), CuArray(q), CuArray(k), CuArray(v))
@@ -347,6 +355,29 @@ end
 
 stage("10c SDPAOps at 16 bits, traced (the variants are built eagerly first)") do
     sdpa_traced_child(true)
+end
+
+# Bisecting stage 10: is it the 2-D 16-bit arrays, the half type, or the build inside the trace?
+stage("10d 2-D 16-bit arrays through a trace (Reactant alone, no KernelDispatch)") do
+    child(quote
+        using Reactant, BFloat16s
+        Reactant.set_default_backend("gpu")
+        oks = Bool[]
+        for T in $(collect(HALF_TYPES))
+            x = T.(randn(Float32, 5, 3))
+            f(x) = permutedims(x, (2, 1)) .+ permutedims(x, (2, 1))
+            println("  ", T, ": tracing")
+            y = Array(Reactant.@jit f(Reactant.to_rarray(x)))
+            good = eltype(y) === T && y == permutedims(x) .+ permutedims(x)
+            println("  ", T, ": ", good ? "ok" : "WRONG")
+            push!(oks, good)
+        end
+        println(all(oks) ? "RESULT ok" : "RESULT wrong values")
+    end, "2-D 16-bit arrays do not trace on this machine")
+end
+
+stage("10e SDPAOps at Float32, traced (the variant is built from inside the trace)") do
+    sdpa_traced_child(false, (Float32,))
 end
 
 # Isolates stage 10: a traced launch with two outputs of different types (T and Float32), the second used or dropped.
