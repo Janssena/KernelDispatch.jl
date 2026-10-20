@@ -63,6 +63,32 @@ else
             end
             @test !KD.tracing()
         end
+
+        # What the device is (its architecture) is asked outside the tracer too. In a process that has only traced so far the
+        # first answer sets up the driver (CUDA.jl creates the context and runs `ptxas --version`), and that crashed inside the
+        # trace. Here the hook is counted, so the test sees the queries go through it whatever state the device is in.
+        @testset "the device is queried outside the tracer" begin
+            hooked = Ref(0)
+            inner = KD._UNTRACED[]
+            KD._UNTRACED[] = f -> (hooked[] += 1; inner(f))
+            try
+                empty!(KD._TARGETS)                                        # forget the cached architecture
+                g(x) = (KD.current_target(); x .+ 1.0f0)
+                Reactant.@code_hlo optimize = false g(Reactant.to_rarray(rand(Float32, 4)))
+                @test hooked[] >= 1
+
+                # and so is the check of a binary against the device, made by every traced launch
+                b = last(first(explicit_binaries(mktempdir())))
+                file, entry, tg, sig = b.file, b.entry, b.threadgroup, b.signature
+                hooked[] = 0
+                launch(x) = only(run_binary(KernelBinary(file; entry, threadgroup=tg, signature=sig), x,
+                    OutArray(eltype(x), 16), 2.0f0, Int32(16); extent=16))
+                Reactant.@code_hlo optimize = false launch(Reactant.to_rarray(rand(Float32, 16)))
+                @test hooked[] >= 1
+            finally
+                KD._UNTRACED[] = inner
+            end
+        end
     finally
         Reactant.set_default_backend(lazy_prev)
     end

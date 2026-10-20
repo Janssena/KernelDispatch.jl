@@ -171,7 +171,7 @@ function prepare_launch(b::KernelBinary, args...;
     isnothing(proto) && throw(ArgumentError("binary `$(b.entry)` was launched without any array argument"))
     
     be = backend_of(proto)
-    be isa GPUBackend && check_binary(be, b)
+    be isa GPUBackend && untraced(() -> check_binary(be, b))      # asks the device (its architecture): outside a trace
     check_types && check_signature(be, b, args, extras)
     groups = cld.(_pad3(extent), b.tile)
     prelude, grid = _prelude_and_grid(be, b, groups)

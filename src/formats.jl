@@ -84,7 +84,7 @@ architecture: switching devices mid-session is not modelled.
 """
 function current_target()
     length(LOADED_BACKENDS) == 1 || return ""
-    return get!(() -> target_id(device_backend()), _TARGETS, only(LOADED_BACKENDS))
+    return get!(() -> untraced(() -> target_id(device_backend())), _TARGETS, only(LOADED_BACKENDS))
 end
 
 const _TARGETS = Dict{Symbol,String}()
