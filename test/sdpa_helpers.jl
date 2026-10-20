@@ -17,7 +17,9 @@ function sdpa_reference(q, k, v)
     return o
 end
 
-inputs(rng, d, n, m, dv) = (randn(rng, Float32, d, n), randn(rng, Float32, d, m), randn(rng, Float32, dv, m))
+# Inputs already rounded to `T`: the reference (Float64, from these same values) sees what the kernel sees.
+inputs(rng, d, n, m, dv, ::Type{T}=Float32) where {T} =
+    (T.(randn(rng, Float32, d, n)), T.(randn(rng, Float32, d, m)), T.(randn(rng, Float32, dv, m)))
 
 # (d, n, m, dv): `n` below, at, and above a threadgroup of 64; a single query and key.
 const SDPA_SIZES = ((16, 100, 70, 8), (4, 1, 1, 1), (8, 64, 64, 4), (32, 129, 5, 16))
@@ -32,7 +34,10 @@ KD.extras(::SDPA, ::SDPADyn, b::KernelBinary) = Tuple(Val(b.params.tg) for _ in 
 
 # The binaries' argument lists, each in its own order (see SDPAOps.jl).
 sdpa_scale(q) = inv(sqrt(Float32(size(q, 1))))
-sdpa_binary_args(::FlashAttn, o, q, k, v) = (q, k, v, o, Int32(size(q, 2)), Int32(size(k, 2)),
+# A half type also takes the Float32 workspace its sums live in, right after the output (see SDPAOps.jl).
+_sdpa_workspace(o::OutArray{Float32}) = ()
+_sdpa_workspace(o::OutArray) = (OutArray(Float32, o.dims),)
+sdpa_binary_args(::FlashAttn, o, q, k, v) = (q, k, v, o, _sdpa_workspace(o)..., Int32(size(q, 2)), Int32(size(k, 2)),
     Int32(size(q, 1)), Int32(size(v, 1)), sdpa_scale(q))
-sdpa_binary_args(::Union{SDPAKA,SDPADyn}, o, q, k, v) = (o, q, k, v, Int32(size(q, 1)), Int32(size(q, 2)),
-    Int32(size(k, 2)), Int32(size(v, 1)), sdpa_scale(q))
+sdpa_binary_args(::Union{SDPAKA,SDPADyn}, o, q, k, v) = (o, _sdpa_workspace(o)..., q, k, v, Int32(size(q, 1)),
+    Int32(size(q, 2)), Int32(size(k, 2)), Int32(size(v, 1)), sdpa_scale(q))

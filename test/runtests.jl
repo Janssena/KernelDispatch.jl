@@ -25,9 +25,9 @@ const KD = KernelDispatch
 
 const VERBOSE = lowercase(get(ENV, "JULIA_TEST_VERBOSE", "false")) in ("true", "1", "yes")
 
-const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "binary_checks", "triton"]
+const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "binary_checks", "signature", "triton"]
 const EXT_HOST_SECTIONS = ["custom_call", "cuda_launch", "cuda_flat"]      # ext/, no device needed
-const GPU_SECTIONS = ["conformance", "launch", "gpu_inference", "gpu_sdpa", "traced"]
+const GPU_SECTIONS = ["conformance", "launch", "gpu_inference", "gpu_sdpa", "mismatch", "traced"]
 const EXT_GPU_SECTIONS = ["ext_cuda"]                                       # ext/, needs that backend's device
 const GROUPS = ["cpu", "gpu", "ext"]
 known = [GROUPS; CPU_SECTIONS; EXT_HOST_SECTIONS; GPU_SECTIONS; EXT_GPU_SECTIONS]
@@ -74,6 +74,10 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
             include("cpu/binary_checks.test.jl")
         end
 
+        cpu("signature") && @testset verbose = VERBOSE "argument types against the binary's signature" begin
+            include("cpu/signature.test.jl")
+        end
+
         cpu("triton") && @testset verbose = VERBOSE "Triton binaries (reader, ABI, real-Triton fixtures)" begin
             include("cpu/triton.test.jl")
         end
@@ -112,6 +116,10 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
 
             gpu("gpu_sdpa") && @testset verbose = VERBOSE "SDPAOps on the device" begin
                 include("gpu/sdpa.test.jl")
+            end
+
+            gpu("mismatch") && @testset verbose = VERBOSE "mismatched types: the hazard, and the guard" begin
+                include("gpu/mismatch.test.jl")
             end
 
             gpu("traced") && @testset verbose = VERBOSE "Traced (Reactant)" begin

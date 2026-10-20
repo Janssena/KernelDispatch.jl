@@ -163,7 +163,7 @@ stage("10 SDPAOps, KernelAbstractions kernel") do
 end
 
 stage("11 launch-size checks") do
-    big = KernelBinary(LS.file; entry=LS.entry, threadgroup=4096, abi=:ka, params=LS.params)
+    big = KernelBinary(LS; threadgroup=4096)
     x = CuArray(rand(rng, Float32, 64))
     a() = (OutArray(Float32, 64), x, 2.0f0, Int32(64), Val(LS_TG))
     check(try; time_binary(big, a()...; extent=64); false; catch e; e isa ArgumentError; end,
@@ -193,10 +193,10 @@ stage("13 target architecture") do
     x = randn(rng, Float32, 16)
     run(b) = Array(only(run_binary(b, CuArray(x), OutArray(Float32, 16), 2.0f0, Int32(16); extent=16)))
     check(run(bins.cubin) ≈ 2.0f0 .* x, "the device's own cubin")
-    wrong = KernelBinary(bins.cubin.file; entry="scale", threadgroup=64, target="sm_20")
+    wrong = KernelBinary(bins.cubin; target="sm_20")
     check(try; run(wrong); false; catch e; e isa ArgumentError && occursin("built for sm_20", e.msg); end,
         "a cubin for another architecture was not refused with an ArgumentError")
-    check(run(KernelBinary(bins.ptx.file; entry="scale", threadgroup=64, target="sm_20")) ≈ 2.0f0 .* x, "portable PTX")
+    check(run(KernelBinary(bins.ptx; target="sm_20")) ≈ 2.0f0 .* x, "portable PTX")
 end
 
 stage("14 Triton ABI: shared memory and trailing pointers") do
@@ -206,8 +206,7 @@ stage("14 Triton ABI: shared memory and trailing pointers") do
     bins = scale_binaries(mktempdir())
     x = randn(rng, Float32, 100)
     for shared in (0, 1024, 60 * 1024), (kind, bin) in pairs(bins)      # 60 KB is above the 48 KB default
-        tb = KernelBinary(bin.file; entry="scale", threadgroup=64, abi=:triton, target=bin.target,
-            shared_mem=shared, params=(; scratch_pointers=2))
+        tb = KernelBinary(bin; abi=:triton, shared_mem=shared, params=(; scratch_pointers=2))
         (y,) = run_binary(tb, CuArray(x), OutArray(Float32, 100), 2.0f0, Int32(100); extent=100)   # tile = 64: 2 blocks
         check(Array(y) ≈ 2.0f0 .* x, "$kind, shared_mem=$shared: wrong values")
     end
@@ -226,7 +225,7 @@ stage("15 flat KA binary, traced through XLA's kernel-call handler") do
         using KernelDispatch, CUDA, Reactant
         Reactant.set_default_backend("gpu")
         file, entry, tg = $(ka.file), $(ka.entry), $(ka.threadgroup)
-        loose() = KernelBinary(file; entry, threadgroup=tg, abi=:ka, params=(; ka_layout="flat", tg))
+        loose() = KernelBinary(file; entry, threadgroup=tg, abi=:ka, params=(; ka_layout="flat", tg), signature=$(ka.signature))
         n = 100
         x = randn(Float32, n)
         f(x) = only(run_binary(loose(), x, OutArray(Float32, n), 2.0f0, Int32(n), Val(tg); extent=n))

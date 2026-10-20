@@ -3,7 +3,7 @@
 # argument-order and size restrictions, and the shape of the emitted `stablehlo.custom_call`. That the
 # handler accepts it and launches the kernel is checked on a CUDA machine (test/gpu/traced.test.jl, test/ext/cuda/triton.test.jl).
 
-using Test, KernelDispatch, Reactant, Zlib_jll
+using Test, KernelDispatch, Reactant, Zlib_jll, BFloat16s
 
 const RXC = Base.get_extension(KernelDispatch, :KernelDispatchReactantExt)
 isdefined(@__MODULE__, :reverse_symbol) || include(joinpath(@__DIR__, "..", "..", "ir_utils.jl"))
@@ -151,11 +151,20 @@ end
     end
 
     err(f) = try f(); nothing catch e; e end
+    # Half-precision results are declared as such (and a missing `result_eltypes` is an error, not Float32).
+    for (T, mlir) in ((Float16, "f16"), (BFloat16, "bf16"))
+        fh(x) = KernelDispatch.custom_call(tag, "scale", cubin, (x,), [(4,)], layout; grid=(1, 1, 1), threadgroup=64,
+            result_eltypes=(T,))[1]
+        @test occursin("tensor<4x$mlir>", repr(Reactant.@code_hlo optimize = false fh(Reactant.to_rarray(T.(rand(Float32, 4))))))
+    end
+    @test err(() -> KernelDispatch.custom_call(tag, "scale", cubin, (), [(4,)], layout; grid=(1, 1, 1),
+        threadgroup=64)) isa UndefKeywordError
     # What cannot be launched this way says so, instead of failing inside XLA.
-    e = err(() -> KernelDispatch.custom_call(tag, "scale", cubin, (), [(4,)], layout; grid=(1, 1, 1), threadgroup=48))
+    e = err(() -> KernelDispatch.custom_call(tag, "scale", cubin, (), [(4,)], layout; grid=(1, 1, 1), threadgroup=48,
+        result_eltypes=(Float32,)))
     @test e isa ArgumentError && occursin("multiple of 32", e.msg)
     e = err(() -> KernelDispatch.custom_call(tag, "scale", "/nonexistent.cubin", (), [(4,)], layout;
-        grid=(1, 1, 1), threadgroup=64))
+        grid=(1, 1, 1), threadgroup=64, result_eltypes=(Float32,)))
     @test e isa ArgumentError && occursin("not found", e.msg)
 end
 

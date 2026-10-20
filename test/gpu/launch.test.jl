@@ -4,7 +4,8 @@
 # op is in gpu/sdpa.test.jl. Backend-neutral: the array type, the backend tag and the backend's own limits
 # come from gpu_backend.jl.
 
-using Test, Random, KernelDispatch, SDPAOps, Enzyme
+using Test, Random, KernelDispatch, SDPAOps, Enzyme, BFloat16s
+isdefined(@__MODULE__, :ELEMENTWISE_RTOL) || include(joinpath(@__DIR__, "..", "precision.jl"))
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))
 
 
@@ -56,7 +57,7 @@ begin
         bin = register_logit_scale!()[:main]
         x = randn(rng, Float32, 300)
         # An unregistered binary: no op, no kernel, no variant.
-        loose = KernelBinary(bin.file; entry=bin.entry, threadgroup=bin.threadgroup, abi=:ka, params=bin.params)
+        loose = KernelBinary(bin)
         y = only(@inferred run_binary(loose, OutArray(Float32, 300), DeviceArray(x), 2.0f0, Int32(300),
             Val(LS_TG); extent=300))
         @test Array(y) ≈ 2.0f0 .* x
@@ -124,6 +125,31 @@ begin
         @test dirname(v[:main].file) == KernelDispatch.kernel_dir(LogitScale(), LogitScaleKA()) && v[:main].is_ka
     end
 
+    @testset "ka_compile at each element type" begin
+        # One kernel, one `name`, a build per element type: each has its own file (the types are in it), is found rather
+        # than rebuilt, and runs in its own type. Before the types were in the name, a second type under the name of
+        # the first got the first's binary back, and ran it on buffers of the wrong width without an error.
+        be, tg = GPU_TAG, 64
+        dir = mktempdir()
+        built = Dict{DataType,KernelBinary}()
+        for T in supported_eltypes()
+            argtypes = (Vector{T}, Vector{T}, Float32, Int32, Val{tg})
+            built[T] = ka_compile(be, logit_scale_kernel!, argtypes; tg, name="typed_scale", dir)
+            @test occursin(KD.ka_signature_tag(argtypes), built[T].file) && built[T].entry == splitext(basename(built[T].file))[1]
+            t = mtime(built[T].file)
+            @test ka_compile(be, logit_scale_kernel!, argtypes; tg, name="typed_scale", dir).file == built[T].file
+            @test mtime(built[T].file) == t
+        end
+        @test length(unique(b.file for b in values(built))) == length(built)
+        for (T, b) in built
+            n = 100
+            x = rounded(T, randn(rng, Float32, n))
+            y = only(run_binary(b, OutArray(T, n), DeviceArray(x), 2.0f0, Int32(n), Val(tg); extent=n))
+            @test eltype(y) === T
+            @test maxrelerr(Array(y), 2.0 .* Float64.(x)) <= ELEMENTWISE_RTOL[T]
+        end
+    end
+
     @testset "launch size: extent and tile" begin
         register_logit_scale!()
         x = randn(rng, Float32, 100)
@@ -163,7 +189,7 @@ begin
         lim = KD.max_threads(bin)
         @test lim == KD.max_threads(be, bin) == KD.max_threads(bin; backend=be)
         @test LS_TG <= lim <= device_max_threads()
-        big = KernelBinary(bin.file; entry=bin.entry, threadgroup=4096, abi=:ka, params=bin.params)
+        big = KernelBinary(bin; threadgroup=4096)
         @test_throws ArgumentError KD.encode_launch(be, big, Any[], (1, 1, 1))
         @test_throws ArgumentError time_binary(big, ls_args(64)...; extent=64)
         @test_throws ArgumentError time_binary(bin, ls_args(64)...; extent=64, reps=0)

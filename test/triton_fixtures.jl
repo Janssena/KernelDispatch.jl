@@ -44,6 +44,6 @@ const TRITON_KERNELS = filter(k -> isdir(joinpath(TRITON_FIXTURES, k.name)), ALL
 
 # One binary from plain values: built INSIDE a traced function (a captured `KernelBinary` is not traceable).
 triton_mkbin(s) = KernelBinary(s.file; entry=s.entry, threadgroup=s.threadgroup, tile=1, abi=:triton, target=s.target,
-    shared_mem=s.shared, params=(; scratch_pointers=s.nptr))
+    shared_mem=s.shared, params=(; scratch_pointers=s.nptr), signature=false)    # these tests are not about the signature
 triton_spec(b) = (; file=b.file, entry=b.entry, threadgroup=b.threadgroup, target=b.target, shared=b.shared_mem,
     nptr=b.params.scratch_pointers)

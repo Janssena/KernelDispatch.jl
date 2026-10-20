@@ -2,32 +2,34 @@
 # path must infer concretely. (The launch paths, which need a device, are in gpu/inference.test.jl.)
 # The op is SDPAOps: `FlashAttn` is an `:explicit` binary, `SDPAKA` a KA binary with `extras`.
 
-using Test, KernelDispatch, SDPAOps
+using Test, KernelDispatch, SDPAOps, BFloat16s
+isdefined(@__MODULE__, :ALL_ELTYPES) || include(joinpath(@__DIR__, "..", "precision.jl"))
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))
 
 isdefined(@__MODULE__, :sdpa_binary_args) || include(joinpath(@__DIR__, "..", "sdpa_helpers.jl"))
 
-@testset "OutArray" begin
-    @test (@inferred OutArray(Float32, 8)) isa OutArray{Float32,1}
-    @test (@inferred OutArray(Float32, 2, 3)) isa OutArray{Float32,2}
-    @test (@inferred OutArray(Float32, (2, 3, 4))) isa OutArray{Float32,3}
-    @test (@inferred OutArray(Float32, 8; zero=true)).zero
-    @test @inferred(eltype(OutArray(Float16, 4))) === Float16
+# Every testset below runs once per element type: the same call, `@inferred`, in Float32, Float16 and BFloat16.
+@testset "OutArray, $T" for T in ALL_ELTYPES
+    @test (@inferred OutArray(T, 8)) isa OutArray{T,1}
+    @test (@inferred OutArray(T, 2, 3)) isa OutArray{T,2}
+    @test (@inferred OutArray(T, (2, 3, 4))) isa OutArray{T,3}
+    @test (@inferred OutArray(T, 8; zero=true)).zero
+    @test @inferred(eltype(OutArray(T, 4))) === T
 end
 
-@testset "InOutArray" begin
+@testset "InOutArray, $T" for T in ALL_ELTYPES
     # An array the kernel updates: bound as the array itself, returned with the outputs, in argument order.
-    x, y = rand(Float32, 8), rand(Float32, 8)
-    args = (OutArray(Float32, 8), InOutArray(y), x, 2.0f0)
+    x, y = T.(rand(Float32, 8)), T.(rand(Float32, 8))
+    args = (OutArray(T, 8), InOutArray(y), x, 2.0f0)
     bound, slots = KD.bind_slots(x, Any[], args, ())
     @test bound[2] === y && length(slots) == 4 && slots[2] === y
     outs = KD._pick_outs(args, bound)
-    @test length(outs) == 2 && outs[2] === y && outs[1] isa Vector{Float32}
-    @test (@inferred KD._pick_outs(args, bound)) isa Tuple{Vector{Float32},Vector{Float32}}
+    @test length(outs) == 2 && outs[2] === y && outs[1] isa Vector{T}       # the output is allocated in `T`
+    @test (@inferred KD._pick_outs(args, bound)) isa Tuple{Vector{T},Vector{T}}
     # It counts as an array: it picks the backend, and a launch with only an InOutArray array has one.
     @test KD._first_array((2.0f0, InOutArray(y))) === y
     @test KD._first_array((2.0f0, Val(1))) === nothing
-    @test (@inferred KD._first_array((OutArray(Float32, 2), InOutArray(y), 2.0f0))) === y
+    @test (@inferred KD._first_array((OutArray(T, 2), InOutArray(y), 2.0f0))) === y
     @test (@inferred KD._first_array((2.0f0, x, InOutArray(y)))) === x
     b = KernelBinary("unused.metallib"; threadgroup=64)
     l = KD.prepare_launch(b, InOutArray(y), 2.0f0; extent=8)
@@ -36,8 +38,8 @@ end
     @test KD._dense_arg(KD.CPUBackend(), InOutArray(y)).array === y
 end
 
-@testset "routing on host arrays" begin
-    x = rand(Float32, 4, 6)
+@testset "routing on host arrays, $T" for T in ALL_ELTYPES
+    x = T.(rand(Float32, 4, 6))
     @test @inferred(KD.backend_of(x)) isa KD.CPUBackend
     @test @inferred(KD.backend_of(x, x)) isa KD.CPUBackend
     @test @inferred(KD.backend_of(view(x, :, 1:2))) isa KD.CPUBackend
@@ -47,25 +49,29 @@ end
     @test @inferred(KD.device_dense(be, Val(64))) === Val(64)
 end
 
-@testset "op hooks" begin
-    q, k, v = rand(Float32, 16, 8), rand(Float32, 16, 6), rand(Float32, 4, 6)
-    op, kern = SDPA(), SDPAKA()
-    args = sdpa_binary_args(kern, OutArray(Float32, 4, 8), q, k, v)
-    @test @inferred(variant_key(op, kern, args...)) === (:Float32,)
+@testset "op hooks, $T" for T in ALL_ELTYPES
+    q, k, v = T.(rand(Float32, 16, 8)), T.(rand(Float32, 16, 6)), T.(rand(Float32, 4, 6))
+    op = SDPA()
+    for kern in (SDPAKA(), FlashAttn())          # each in its own argument order, with the workspace for a half type
+        args = sdpa_binary_args(kern, OutArray(T, 4, 8), q, k, v)
+        @test @inferred(variant_key(op, kern, args...)) === (nameof(T),)
+    end
+    kern = SDPAKA()
     b = KernelBinary("unused.metallib"; threadgroup=64, params=(; tg=64))
     # `KernelBinary.params` is an abstract `NamedTuple` (binaries live in a `Dict` and reload from a manifest),
     # so a hook that reads a tuning number from it cannot infer: the documented one dynamic dispatch
     # per launch. `call_binary` binds `extras` apart from `args`. The launch size reads only `tile`.
     @test extras(op, kern, b) === (Val(64),)
     @test_broken (@inferred extras(op, kern, b); true)
-    x, y = rand(Float32, 8), rand(Float32, 8)
-    l = @inferred KD.prepare_launch(b, OutArray(Float32, 8), x, y, 2.0f0; extent=8)
+    x, y = T.(rand(Float32, 8)), T.(rand(Float32, 8))
+    l = @inferred KD.prepare_launch(b, OutArray(T, 8), x, y, 2.0f0; extent=8)
     @test l.groups === l.grid === (1, 1, 1)
     @test isconcretetype(typeof(l))
 end
 
-@testset "host path of an op" begin
-    q, k, v = rand(Float32, 16, 8), rand(Float32, 16, 6), rand(Float32, 4, 6)
+@testset "host path of an op, $T" for T in ALL_ELTYPES
+    # The host runs its plain Julia and returns whatever that gives (wider than the inputs for a half type); stable either way.
+    q, k, v = T.(rand(Float32, 16, 8)), T.(rand(Float32, 16, 6)), T.(rand(Float32, 4, 6))
     @test_nowarn @inferred SDPA()(q, k, v)
 end
 

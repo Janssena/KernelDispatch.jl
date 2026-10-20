@@ -44,7 +44,7 @@ if GPU === :cuda && have_triton_fixtures()
 
         @testset "eager: $(k.name), $image" for k in TRITON_KERNELS, image in (:cubin, :ptx)
             p = triton_paths(k.name)
-            b = triton_binary(p.json; image=getfield(p, image))
+            b = triton_binary(p.json; image=getfield(p, image), signature=false)
             args = map(DeviceArray, data[k.name])
             y = Array(call_of[k.name](b, args...))
             @test y ≈ expected_of(k.name) rtol = rtol_of(k.name) atol = 1e-6      # Triton's own output
@@ -59,7 +59,7 @@ if GPU === :cuda && have_triton_fixtures()
         try
             @testset "traced: $(k.name), $image" for k in TRITON_KERNELS, image in (:cubin, :ptx)
                 p = triton_paths(k.name)
-                s = triton_spec(triton_binary(p.json; image=getfield(p, image)))
+                s = triton_spec(triton_binary(p.json; image=getfield(p, image), signature=false))
                 args = map(a -> Reactant.to_rarray(a), data[k.name])
                 call = call_of[k.name]
                 f(args...) = call(triton_mkbin(s), args...)

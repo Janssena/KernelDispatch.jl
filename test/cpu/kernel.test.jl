@@ -176,7 +176,7 @@ end
     @test KD.variant(Residual(), Other(), (:Float32, 256))[:fwd].target == "sm_80"
     @test KD.variant(Residual(), Other(), (:Float32, 64))[:fwd].target == ""
     mtext = read(joinpath(KD.cache_dir(Residual()), "other", "manifest.toml"), String)
-    @test occursin("format_version = 2", mtext) && occursin("abi = \"ka\"", mtext) && !occursin("is_ka", mtext)
+    @test occursin("format_version = 3", mtext) && occursin("abi = \"ka\"", mtext) && !occursin("is_ka", mtext)
 
     # A manifest from before `tile` existed loads with the default, one item per thread.
     path = joinpath(KD.cache_dir(Residual()), "other", "manifest.toml")

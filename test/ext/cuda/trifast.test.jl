@@ -17,7 +17,7 @@ if GPU === :cuda && have_trifast_fixtures()
         case = trifast_case()
         insts = case["instances"]
         plans = Dict(i["name"] => trifast_plan(case, i) for i in insts)
-        specs(inst, image) = triton_spec(triton_binary(trifast_json(inst); image=trifast_image(inst, image)))
+        specs(inst, image) = triton_spec(triton_binary(trifast_json(inst); image=trifast_image(inst, image), signature=false))
         # The inputs every kernel may read (the forward's and `_bwd_q`'s outputs are saved as data too).
         base = ("d", "do", "k", "l", "mask", "o", "q", "v", "b")
 

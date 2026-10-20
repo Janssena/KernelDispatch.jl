@@ -9,7 +9,7 @@
 # Runnable on its own:
 #     julia --project=test test/ext/metal/custom_call.test.jl
 
-using Test, KernelDispatch, Reactant
+using Test, KernelDispatch, Reactant, BFloat16s
 
 const RX = Base.get_extension(KernelDispatch, :KernelDispatchReactantExt)
 
@@ -23,7 +23,7 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
 
         function fwd(x)
             o, = RX._metal_kernel_lib("_fwd", "/tmp/none.metallib", (x,), [(4,)],
-                [(:out, 0), (:in, 0)]; grid=(1, 1, 1),
+                [(:out, 0), (:in, 0)]; grid=(1, 1, 1), result_eltypes=(Float32,),
                 reverse=vjp, active_operands=(0,))
             return o
         end
@@ -57,7 +57,7 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
             o, lse = RX._metal_kernel_lib("_fwd", "/tmp/none.metallib",
                 (q, k, v, b, mask), [S4, S3],
                 [(:out, 0), (:out, 1), (:in, 0), (:in, 1), (:in, 2), (:in, 3), (:in, 4)];
-                grid=(1, 1, 1), reverse=vjp, active_operands=(0, 1, 2, 3))
+                grid=(1, 1, 1), result_eltypes=(Float32, Float32), reverse=vjp, active_operands=(0, 1, 2, 3))
             return o
         end
 
@@ -81,7 +81,7 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
     @testset "no rule attached when none is asked for" begin
         function fwd(x)
             o, = RX._metal_kernel_lib("_fwd", "/tmp/none.metallib", (x,), [(4,)],
-                [(:out, 0), (:in, 0)]; grid=(1, 1, 1))
+                [(:out, 0), (:in, 0)]; grid=(1, 1, 1), result_eltypes=(Float32,))
             return o
         end
 
@@ -90,13 +90,26 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
         @test !occursin("enzyme.active_operands", ir)
     end
 
+    @testset "result_eltypes has no default, and half types are emitted as declared" begin
+        # Omitting it used to declare Float32 results silently: a Float16 kernel's output was read back as garbage.
+        fwd_missing(x) = RX._metal_kernel_lib("_fwd", "/tmp/none.metallib", (x,), [(4,)],
+            [(:out, 0), (:in, 0)]; grid=(1, 1, 1))
+        @test_throws UndefKeywordError fwd_missing(Reactant.to_rarray(rand(Float32, 4)))
+        for (T, mlir) in ((Float16, "f16"), (BFloat16, "bf16"), (Float32, "f32"))
+            fwd(x) = RX._metal_kernel_lib("_fwd", "/tmp/none.metallib", (x,), [(4,)],
+                [(:out, 0), (:in, 0)]; grid=(1, 1, 1), result_eltypes=(T,))[1]
+            ir = emit(fwd, Reactant.to_rarray(T.(rand(Float32, 4))))
+            @test occursin("-> tensor<4x$mlir>", ir)
+        end
+    end
+
     @testset "custom_call dispatches on the backend" begin
         # A backend without a method (ROCm) says so; CUDA has one (test/ext/cuda/launch_encoding.test.jl).
         @test_throws ArgumentError KernelDispatch.custom_call(KernelDispatch.ROCmBackendTag(),
             "_fwd", "/tmp/none.metallib", (), [(4,)], Any[]; grid=(1, 1, 1))
 
         fwd(x) = KernelDispatch.custom_call(KernelDispatch.MetalBackendTag(), "_fwd", "/tmp/none.metallib",
-            (x,), [(4,)], Any[(:in, 0), (:out, 0)]; grid=(1, 1, 1), threadgroup=4)[1]
+            (x,), [(4,)], Any[(:in, 0), (:out, 0)]; grid=(1, 1, 1), threadgroup=4, result_eltypes=(Float32,))[1]
         @test occursin("mps.metal_kernel_lib", emit(fwd, Reactant.to_rarray(rand(Float32, 4))))
     end
 
@@ -108,7 +121,7 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
 
         function fwd(x)
             o, = RX._embed_custom_call("my.custom_target", (x,), [(4,)];
-                backend_config="{\"anything\":\"goes\"}", reverse=vjp, active_operands=(0,))
+                backend_config="{\"anything\":\"goes\"}", result_eltypes=(Float32,), reverse=vjp, active_operands=(0,))
             return o
         end
 
