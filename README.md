@@ -1,5 +1,6 @@
 <p align="left">
   <a href="https://github.com/Janssena/KernelDispatch.jl/actions/workflows/test.yml"><img src="https://github.com/Janssena/KernelDispatch.jl/actions/workflows/test.yml/badge.svg?branch=main" alt="CPU tests"></a>
+  <a href="https://janssena.github.io/KernelDispatch.jl/stable/"><img src="https://img.shields.io/badge/docs-stable-blue.svg" alt="Documentation (stable)"></a>
   <a href="https://janssena.github.io/KernelDispatch.jl/dev/"><img src="https://img.shields.io/badge/docs-dev-blue.svg" alt="Documentation (dev)"></a>
   <a href="https://julialang.org"><img src="https://img.shields.io/badge/Julia-1.12%20(%E2%89%A5%201.11)-9558B2?logo=julia&logoColor=white" alt="Julia 1.12, requires 1.11 or newer"></a>
 </p>
@@ -43,8 +44,8 @@ kernel's buffers may come in any order, and a kernel that updates an array in pl
 
 **What is tested.** Metal (eager and traced) on Apple silicon. CUDA on one NVIDIA A40 (sm_86): prebuilt, KernelAbstractions and Triton
 binaries, eager and traced, including kernels compiled by Triton 3.8.0 (small test kernels and
-[trifast](https://github.com/latkins/trifast)'s four triangle-attention kernels, checked against torch). **Everything is
-tested in Float32 only**; Float16 and BFloat16 are not tested yet. ROCm is not implemented. A Triton
+[trifast](https://github.com/latkins/trifast)'s four triangle-attention kernels, checked against torch). **CUDA and Triton are tested in Float32 only**; on Metal, Float16 and BFloat16 are tested too (prebuilt, KernelAbstractions and
+SDPAOps kernels, eager and traced), and on CUDA they are not tested yet (see `docs/half-precision.md`). ROCm is not implemented. A Triton
 binary is compiled for the specialisation of the arguments it was first launched with (integers equal to 1 or divisible
 by 16), so a registered one serves only launches in the same class. See the documentation's *Backends* page for the
 matrix and the limits.
@@ -163,7 +164,7 @@ use_kernel!(SDPA(), SDPAKA())
 - `ka_compile(backend, kernel, argtypes; tg, name, params, tile)` returns a `KernelBinary` with
   `abi=:ka` and, unless given, `tile=(tg, 1, 1)`: one item per thread, as `sdpa_ka!` indexes. It
   builds into `ka_binary_cache_dir()` (`<cache_root>/ka`, in a subdirectory named for the GPU architecture where it matters, e.g. `sm_86`) and finds it there next time, so put a
-  source hash in `name`. Its `argtypes` are the arguments after KA's context: `Vector{T}` for a
+  source hash in `name`. The file name also carries the signature of `argtypes` (`sdpa_ka_v1_f32x4_i32sx4_f32s_v64`), so the same kernel at `Float16` is another file. Its `argtypes` are the arguments after KA's context: `Vector{T}` for a
   buffer (a raw device pointer, indexed with `unsafe_load`/`unsafe_store!`), a bits type, `Val{x}`.
 - `abi=:ka` tells `call_binary` to bind what a KernelAbstractions binary takes ahead of its arguments (KA's launch context and the
   backend's state word on Metal; KA's context as six integers and no state on CUDA), and to dispatch flat (`abi=:explicit`, the default, binds nothing extra). Compile KernelAbstractions kernels with `ka_compile` so the binary matches. It is a
