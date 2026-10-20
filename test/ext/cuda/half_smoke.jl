@@ -212,7 +212,7 @@ stage("6 explicit PTX at 16 bits, traced") do
         using KernelDispatch, CUDA, Reactant, BFloat16s
         Reactant.set_default_backend("gpu")
         off = Reactant.CompileOptions(; raise_triton_custom_call=false)
-        ok = true
+        oks = Bool[]
         for (tname, file, entry, sig) in $spec
             T = tname == "Float16" ? Float16 : BFloat16
             x = T.(randn(Float32, 100))
@@ -221,9 +221,9 @@ stage("6 explicit PTX at 16 bits, traced") do
             y = Array(Reactant.@jit compile_options = off f(Reactant.to_rarray(x)))
             good = eltype(y) === T && y == T.(2.0f0 .* Float32.(x))
             println("  ", T, ": ", good ? "ok" : "WRONG (eltype $(eltype(y)))")
-            ok &= good
+            push!(oks, good)
         end
-        println(ok ? "RESULT ok" : "RESULT wrong values")
+        println(all(oks) ? "RESULT ok" : "RESULT wrong values")
     end, "a traced 16-bit PTX launch did not produce the host result")
 end
 
@@ -235,7 +235,7 @@ stage("7 flat KA binary at 16 bits, traced (incl. mixed outputs)") do
         off = Reactant.CompileOptions(; raise_triton_custom_call=false)
         be = KernelDispatch.device_backend()
         dir = mktempdir()
-        ok = true
+        oks = Bool[]
         for T in $(collect(HALF_TYPES))
             n = 64
             argt = (Vector{T}, Vector{T}, Vector{T}, Float32, Int32, Val{64})
@@ -252,9 +252,9 @@ stage("7 flat KA binary at 16 bits, traced (incl. mixed outputs)") do
             gx, gy = Reactant.@jit compile_options = off g(Reactant.to_rarray(x), Reactant.to_rarray(y), Reactant.to_rarray(dz))
             ok2 = eltype(gx) === T && eltype(gy) === T && maximum(abs.(Float32.(Array(gx)) .- 3 .* Float32.(dz))) <= 0.05
             println("  ", T, ": forward ", ok1, ", backward (two outputs) ", ok2)
-            ok &= ok1 && ok2
+            push!(oks, ok1 && ok2)
         end
-        println(ok ? "RESULT ok" : "RESULT wrong values")
+        println(all(oks) ? "RESULT ok" : "RESULT wrong values")
     end, "a traced half-precision KA launch did not produce the host result")
 end
 
@@ -300,13 +300,14 @@ end
 stage("10 SDPAOps at 16 bits, traced") do
     child(quote
         using Random, KernelDispatch, SDPAOps, CUDA, Reactant, BFloat16s
+        const KD = KernelDispatch
         include($(joinpath(@__DIR__, "..", "..", "fixtures.jl")))
         include($(joinpath(@__DIR__, "..", "..", "sdpa_helpers.jl")))
         include($(joinpath(@__DIR__, "..", "..", "precision.jl")))
         Reactant.set_default_backend("gpu")
         off = Reactant.CompileOptions(; raise_triton_custom_call=false)
         rng = Xoshiro(3)
-        ok = true
+        oks = Bool[]
         for T in $(collect(HALF_TYPES))
             q, k, v = inputs(rng, 16, 100, 70, 8, T)
             f(q, k, v) = KernelDispatch.forward(SDPA(), SDPAKA(), q, k, v)
@@ -314,9 +315,9 @@ stage("10 SDPAOps at 16 bits, traced") do
             err = maxrelerr(o, sdpa_reference(q, k, v))
             good = eltype(o) === T && err <= REDUCTION_RTOL[T]
             println("  ", T, ": error ", err, good ? " ok" : " WRONG")
-            ok &= good
+            push!(oks, good)
         end
-        println(ok ? "RESULT ok" : "RESULT wrong values")
+        println(all(oks) ? "RESULT ok" : "RESULT wrong values")
     end, "a traced half-precision SDPAOps launch did not produce the host result")
 end
 
