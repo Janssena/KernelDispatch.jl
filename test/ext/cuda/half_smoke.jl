@@ -71,7 +71,8 @@ function child(code::Expr, what)
         i = findfirst(l -> occursin(r"signal \(\d+\)|Segmentation|Stack dump|Check failed|terminate called", l), lines)
         if i !== nothing
             println("      --- the start of the crash report ---")
-            foreach(l -> println("      ", first(l, 220)), lines[max(1, i - 3):min(end, i + 25)])
+            window = lines[max(1, i - 3):min(end, i + 90)]
+            foreach(l -> println("      ", first(l, 200)), filter(l -> !occursin("unknown function", l), window))
             println("      --- the end of the output ---")
         end
         foreach(l -> println("      ", first(l, 220)), last(lines, 40))
@@ -331,6 +332,15 @@ function sdpa_traced_child(warm::Bool, types=HALF_TYPES)
         off = Reactant.CompileOptions(; raise_triton_custom_call=false)
         rng = Xoshiro(3)
         oks = Bool[]
+        # Say when the on-demand build starts and returns, so a crash can be placed before, in or after it (`Core.println` is a
+        # builtin: the tracer does not rewrite it).
+        inner = KernelDispatch._UNTRACED[]
+        KernelDispatch._UNTRACED[] = f -> begin
+            Core.println("  [untraced] build starting")
+            r = inner(f)
+            Core.println("  [untraced] build returned")
+            r
+        end
         for T in $(collect(types))
             q, k, v = inputs(rng, 16, 100, 70, 8, T)
             if $warm
