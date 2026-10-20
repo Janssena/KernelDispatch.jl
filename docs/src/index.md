@@ -31,10 +31,29 @@ binaries are built without CUDA.jl's kernel state, so the same file launches eag
 that such a kernel must not be able to throw. A kernel's buffers may come in any order, and a kernel that updates an
 array in place takes it as an [`InOutArray`](@ref).
 
-**What is tested.** Metal (eager and traced) on Apple silicon. CUDA on one NVIDIA A40 (sm_86): prebuilt, KA and Triton
-binaries, eager and traced, including kernels compiled by Triton 3.8.0 (small test kernels and
-[trifast](https://github.com/latkins/trifast)'s four triangle-attention kernels, checked against torch). **Everything is
-tested in Float32 only**; Float16 and BFloat16 are not tested yet. ROCm is not implemented. A Triton
+**Precisions.** `Float32`, `Float16` and `BFloat16` are all supported, eagerly and from a Reactant trace, on Metal and on
+CUDA: buffers of any of the three, outputs allocated in their own type (`OutArray(Float16, n)`), and launches that mix
+them (a `BFloat16` output next to a `Float32` one, half-precision buffers with a `Float32` scalar). A binary is chosen by the
+element type through the variant key, so one op can ship a binary per precision, and what a kernel accumulates in is its
+own choice (the example `SDPAOps` reads and writes `T` and sums in `Float32`). A binary carries the types it was compiled
+for, and a launch with other types is refused instead of computing garbage (see *Argument types are checked* below).
+`Float64` is not a goal. Kernels compiled by Triton are the exception to "all three": the Triton fixtures are `float32`, so
+Triton in half precision has not been tested. A 2-byte scalar cannot be passed to XLA's handler on CUDA, so it is refused
+in a trace (pass a `Float32` scalar, as the half-precision kernels here do).
+
+**Argument types are checked.** A binary takes raw pointers and bits scalars, so one compiled for `float*` and handed a `Float16`
+array would run and compute something else. `ka_compile` records the signature of the kernel it builds, and a launch whose
+types differ is refused with the argument named (`check_types=false` skips the check). For a prebuilt binary, say what
+it takes with `KernelBinary(...; signature=(Vector{Float32}, Float32, Int32))`; without one the first launch warns once
+and prints the `signature=` that fits (`signature=false` silences that). Which types, in which order, and what is not
+checked: [Signatures](signatures.md).
+
+**What is tested.** Metal (eager and traced) on Apple silicon, in `Float32`, `Float16` and `BFloat16`: prebuilt,
+KernelAbstractions and `SDPAOps` kernels, gradients through Enzyme, mixed-type outputs. CUDA on one NVIDIA A40 (sm_86): prebuilt,
+KernelAbstractions and Triton binaries, eager and traced, in `Float32`, and `Float16` and `BFloat16` for prebuilt PTX and cubin,
+KernelAbstractions kernels, `SDPAOps` and gradients, eager and traced. Kernels compiled by Triton are tested with Triton 3.2.0 and 3.8.0
+(small test kernels, which differ in their hidden trailing pointers) in `Float32`, and with 3.2.0 in `Float16` and `BFloat16` too;
+[trifast](https://github.com/latkins/trifast)'s four triangle-attention kernels (3.2.0, `Float32`) are checked against torch. ROCm is not implemented. A Triton
 binary is compiled for the specialisation of the arguments it was first launched with (integers equal to 1 or divisible
 by 16), so a registered one serves only launches in the same class. See the [Backends](backends.md) page for the
 matrix and the limits.
@@ -46,7 +65,7 @@ matrix and the limits.
 | **op** | an operation: `SDPA <: AbstractKernelOp` | [`host`](@ref), [`@default_kernel`](@ref) |
 | **kernel** | one implementation: `Trifast <: AbstractKernel` | [`forward`](@ref) (builds the binary's arguments), optionally [`backward`](@ref), [`variant_key`](@ref), [`extras`](@ref), [`nearest`](@ref), [`build!`](@ref), [`source_tag`](@ref) |
 | **variant** | one (tuned) build of a kernel for a class of inputs: launch name → `KernelBinary` | [`add_variant!`](@ref) |
-| **[`KernelBinary`](@ref)** | one compiled launch: file, entry point, `threadgroup`, `tile`, tuning `params`, `abi`, `target`, `shared_mem` | — ([`ka_compile`](@ref) and [`triton_binary`](@ref) make them) |
+| **[`KernelBinary`](@ref)** | one compiled launch: file, entry point, `threadgroup`, `tile`, tuning `params`, `abi`, `target`, `shared_mem`, `signature` | — ([`ka_compile`](@ref) and [`triton_binary`](@ref) make them) |
 
 Ops and kernels are fieldless singletons; behaviour comes from dispatch. Which kernel is *selected* is a
 method, so an op call is type-stable.

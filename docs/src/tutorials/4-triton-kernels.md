@@ -368,7 +368,8 @@ The compiled signature is what counts, and Triton changes it:
 - **Pass exactly the arguments the compiled kernel declares.** Triton removes `constexpr` arguments from the signature and
   integers equal to 1 (a stride of a contiguous array), so the `forward` must not bind them. For trifast's `_fwd` with
   contiguous inputs, four constexprs and seven strides equal to 1 are dropped from its forty Python parameters, leaving 29. `test/triton_fixtures.jl` has `ptx_param_kinds`, which lists the parameters of
-  the PTX entry to compare with. Nothing checks this at launch yet.
+  the PTX entry to compare with. Pass the types you bind as `triton_binary(...; signature=(...))` and a launch with other types
+  (a `Float16` array for an `fp32` pointer) is refused; without one the first launch warns once and shows the signature that fits it.
 - **A binary is valid only for the specialisation it was compiled for.** Triton also compiles integers and pointers
   divisible by 16 in as such. For trifast's `_fwd`, sequence lengths 33, 40 and 41 shared one binary and 48 and 64
   another. Register one binary per class, and put the class in the variant key; a launch outside it is not checked and can

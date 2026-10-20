@@ -79,6 +79,7 @@ max_threads
 ```@docs
 ka_compile
 ka_binary_cache_dir
+ka_signature_tag
 ```
 
 ## Triton kernels
@@ -110,6 +111,7 @@ realtype
 
 ```@docs
 tracing
+untraced
 traced_autodiff
 KERNEL_IN_TRACED_AUTODIFF
 ```

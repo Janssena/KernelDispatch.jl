@@ -10,8 +10,15 @@ device_max_threads() = Int(GPU_PKG.attribute(GPU_PKG.device(), GPU_PKG.DEVICE_AT
 
 wrapped_array_type() = Base.get_extension(KernelDispatch, :KernelDispatchCUDAExt).WrappedCuArray
 
+"""
+The element types the backend's `:explicit` `scale` binaries exist for. Float32 only: the half-precision PTX kernels are
+written in test/ext/cuda/half_smoke.jl, to be run on a GPU before they join the generic suite.
+"""
+supported_eltypes() = (Float32,)
+
 "The backend's `:explicit` `scale` binaries (`y[i] = a * x[i]`), as `label => KernelBinary`, built in `dir`."
-function explicit_binaries(dir)
+function explicit_binaries(dir, ::Type{T}=Float32) where {T}
+    T === Float32 || throw(ArgumentError("no explicit CUDA `scale` binary for $T"))
     b = scale_binaries(dir)
     return ["cubin" => b.cubin, "ptx" => b.ptx]
 end

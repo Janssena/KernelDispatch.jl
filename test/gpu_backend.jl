@@ -15,7 +15,9 @@
 #     DeviceArray                the device array type (`MtlArray`/`CuArray`)
 #     device_max_threads()       the device's per-threadgroup (per-block) thread limit
 #     wrapped_array_type()       the extension's union of array wrappers that are not a plain device array
-#     explicit_binaries(dir)     `label => KernelBinary` of the `:explicit` `scale` fixture (y[i] = a * x[i]), built in `dir`
+#     supported_eltypes()        the element types the `scale` fixture exists for (Float32, plus Float16/BFloat16 where there is one)
+#     explicit_binaries(dir, T)  `label => KernelBinary` of the `:explicit` `scale` fixture for buffers of type `T` (y[i] = a * x[i],
+#                                `a` a Float32 whatever `T` is), built in `dir`; `T` defaults to Float32
 #     foreign_binary(dir)        a binary in a format the OTHER vendors use, which this backend must refuse
 #     traced_client()            the Reactant client for traced launches, or `nothing` when the machine has none
 #     TRACED_CALL_TARGET         the custom call's name in emitted MLIR ("mps.metal_kernel_lib", "triton_kernel_call_ffi")

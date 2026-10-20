@@ -1,10 +1,11 @@
 # Eager launches on the loaded GPU backend, for what SDPAOps (gpu/sdpa.test.jl) cannot show: a backward
-# that is itself a launched binary and the Enzyme rule over it (`Residual`), and the binary-level launch
+# that is itself a launched binary (`Residual`; its gradient through Enzyme is in ext/enzyme), and the binary-level launch
 # features: sizing, `ka_compile`, unregistered binaries, timing (`LogitScale`). The forward path of a real
 # op is in gpu/sdpa.test.jl. Backend-neutral: the array type, the backend tag and the backend's own limits
 # come from gpu_backend.jl.
 
-using Test, Random, KernelDispatch, SDPAOps, Enzyme
+using Test, Random, KernelDispatch, SDPAOps, Enzyme, BFloat16s
+isdefined(@__MODULE__, :ELEMENTWISE_RTOL) || include(joinpath(@__DIR__, "..", "precision.jl"))
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))
 
 
@@ -56,7 +57,7 @@ begin
         bin = register_logit_scale!()[:main]
         x = randn(rng, Float32, 300)
         # An unregistered binary: no op, no kernel, no variant.
-        loose = KernelBinary(bin.file; entry=bin.entry, threadgroup=bin.threadgroup, abi=:ka, params=bin.params)
+        loose = KernelBinary(bin)
         y = only(@inferred run_binary(loose, OutArray(Float32, 300), DeviceArray(x), 2.0f0, Int32(300),
             Val(LS_TG); extent=300))
         @test Array(y) ≈ 2.0f0 .* x
@@ -68,30 +69,7 @@ begin
         @test_throws ArgumentError prepare_launch(loose, DeviceArray(x))       # no extent
     end
 
-    # Reverse through `f` on device arrays: the forward's result and the gradients for cotangent `dz`.
-    function residual_grads(f, x, y, a, dz)
-        xd, yd = DeviceArray(x), DeviceArray(y)
-        gx, gy = zero(xd), zero(yd)
-        fwd, rev = Enzyme.autodiff_thunk(ReverseSplitWithPrimal, Const{typeof(f)}, Duplicated,
-            Duplicated{typeof(xd)}, Duplicated{typeof(yd)}, Const{Float32})
-        args = (Const(f), Duplicated(xd, gx), Duplicated(yd, gy), Const(a))
-        tape, primal, shadow = fwd(args...)
-        shadow .= DeviceArray(dz)
-        rev(args..., tape)
-        return Array(primal), Array(gx), Array(gy)
-    end
-
-    @testset "Enzyme rule" begin
-        n = 50
-        x, y, dz = randn(rng, Float32, n), randn(rng, Float32, n), randn(rng, Float32, n)
-        # Through the op call, and through a direct `forward(op, kernel, ...)`: both reach the rule.
-        for f in ((x, y, a) -> Residual()(x, y, a), (x, y, a) -> KD.forward(Residual(), ResidualKA(), x, y, a))
-            primal, gx, gy = residual_grads(f, x, y, 3.0f0, dz)
-            @test primal ≈ 3 .* x .+ y
-            @test gx ≈ 3 .* dz
-            @test gy ≈ dz
-        end
-    end
+    # The gradient of an op through Enzyme, host against device, and that the backward kernel runs: test/ext/enzyme.
 
     @testset "ka_compile + call_binary, eager" begin
         register_logit_scale!()
@@ -122,6 +100,31 @@ begin
         @test ka_compile(be, logit_scale_kernel!, argtypes; tg=64, name="scale_t64").file == p1 && mtime(p1) == t
         v = add_variant!(LogitScale(), LogitScaleKA(), (:copied,); main=b1)
         @test dirname(v[:main].file) == KernelDispatch.kernel_dir(LogitScale(), LogitScaleKA()) && v[:main].is_ka
+    end
+
+    @testset "ka_compile at each element type" begin
+        # One kernel, one `name`, a build per element type: each has its own file (the types are in it), is found rather
+        # than rebuilt, and runs in its own type. Before the types were in the name, a second type under the name of
+        # the first got the first's binary back, and ran it on buffers of the wrong width without an error.
+        be, tg = GPU_TAG, 64
+        dir = mktempdir()
+        built = Dict{DataType,KernelBinary}()
+        for T in supported_eltypes()
+            argtypes = (Vector{T}, Vector{T}, Float32, Int32, Val{tg})
+            built[T] = ka_compile(be, logit_scale_kernel!, argtypes; tg, name="typed_scale", dir)
+            @test occursin(KD.ka_signature_tag(argtypes), built[T].file) && built[T].entry == splitext(basename(built[T].file))[1]
+            t = mtime(built[T].file)
+            @test ka_compile(be, logit_scale_kernel!, argtypes; tg, name="typed_scale", dir).file == built[T].file
+            @test mtime(built[T].file) == t
+        end
+        @test length(unique(b.file for b in values(built))) == length(built)
+        for (T, b) in built
+            n = 100
+            x = rounded(T, randn(rng, Float32, n))
+            y = only(run_binary(b, OutArray(T, n), DeviceArray(x), 2.0f0, Int32(n), Val(tg); extent=n))
+            @test eltype(y) === T
+            @test maxrelerr(Array(y), 2.0 .* Float64.(x)) <= ELEMENTWISE_RTOL[T]
+        end
     end
 
     @testset "launch size: extent and tile" begin
@@ -163,7 +166,7 @@ begin
         lim = KD.max_threads(bin)
         @test lim == KD.max_threads(be, bin) == KD.max_threads(bin; backend=be)
         @test LS_TG <= lim <= device_max_threads()
-        big = KernelBinary(bin.file; entry=bin.entry, threadgroup=4096, abi=:ka, params=bin.params)
+        big = KernelBinary(bin; threadgroup=4096)
         @test_throws ArgumentError KD.encode_launch(be, big, Any[], (1, 1, 1))
         @test_throws ArgumentError time_binary(big, ls_args(64)...; extent=64)
         @test_throws ArgumentError time_binary(bin, ls_args(64)...; extent=64, reps=0)

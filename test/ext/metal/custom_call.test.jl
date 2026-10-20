@@ -1,10 +1,9 @@
-# The reverse rule attached to a `stablehlo.custom_call` call site.
+# Metal's own custom-call embedding: `mps.metal_kernel_lib`, the dispatcher jax-mps provides for a named kernel in a
+# `.metallib`. Only what is specific to it is here: the buffer table it emits and what it refuses. The generic seam it is
+# built on (reverse rules, aliases, result types) is tested for every backend in test/ext/reactant.
 #
-# These tests never run a kernel: they trace, and assert on the emitted MLIR. That is deliberate --
-# the part that can silently go wrong is the *shape* of what gets emitted, and it is checkable
-# without a GPU, without the metallibs, on the CPU client. Enzyme verifies this same signature
-# before it fires, so a mismatch here is what would otherwise become a compile error at gradient
-# time (or, if the check did not exist, a wrong gradient).
+# Nothing runs a kernel: it traces on Reactant's CPU client and reads the emitted MLIR, so it needs no Metal device.
+# (A real traced Metal launch is in gpu/traced.test.jl and gpu/conformance.test.jl.)
 #
 # Runnable on its own:
 #     julia --project=test test/ext/metal/custom_call.test.jl
@@ -13,110 +12,39 @@ using Test, KernelDispatch, Reactant
 
 const RX = Base.get_extension(KernelDispatch, :KernelDispatchReactantExt)
 
-isdefined(@__MODULE__, :reverse_symbol) || include(joinpath(@__DIR__, "..", "..", "ir_utils.jl"))   # reverse_symbol, reverse_signature
-
 emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none f(args...))
 
-@testset "custom_call reverse rule" begin
-    @testset "attributes and signature" begin
-        vjp(x, o, dout) = (Reactant.Ops.multiply(dout, Reactant.Ops.fill(3.0f0, (4,))),)
+@testset "mps.metal_kernel_lib" begin
+    x = Reactant.to_rarray(rand(Float32, 4))
+    lib(layout; kw...) = x -> first(RX._metal_kernel_lib("kern", "/tmp/none.metallib", (x,), [(4,)], layout;
+        grid=(2, 1, 1), threadgroup=64, result_eltypes=(Float32,), kw...))
 
-        function fwd(x)
-            o, = RX._metal_kernel_lib("_fwd", "/tmp/none.metallib", (x,), [(4,)],
-                [(:out, 0), (:in, 0)]; grid=(1, 1, 1),
-                reverse=vjp, active_operands=(0,))
-            return o
-        end
-
-        ir = emit(fwd, Reactant.to_rarray(rand(Float32, 4)))
-
-        @test occursin("enzyme.reverse = @", ir)
-        @test occursin("enzyme.active_operands = array<i64: 0>", ir)
-        # One primal operand, one primal result, one result cotangent -> one cotangent back.
-        @test reverse_signature(ir) == (3, 1)
-        # The rule is only ever referenced from an attribute; it has to survive anyway.
-        @test occursin(string("@\"", reverse_symbol(ir), "\"("), ir)
+    @testset "the buffer table and the dispatch" begin
+        ir = emit(lib(Any[(:in, 0), (:out, 0), (:bytes, "[1,2,3]")]), x)
+        @test occursin("stablehlo.custom_call @mps.metal_kernel_lib", ir)
+        @test occursin("\\22name\\22:\\22kern\\22", ir) && occursin("\\22metallib_path\\22:\\22/tmp/none.metallib\\22", ir)
+        @test occursin("\\22grid\\22:[2,1,1]", ir) && occursin("\\22threadgroup\\22:[64,1,1]", ir)
+        @test occursin("\\22dispatch\\22:\\22threadgroups\\22", ir)             # by threadgroups, as the kernel indexes
+        @test occursin("\\22kind\\22:\\22input\\22", ir) && occursin("\\22kind\\22:\\22output\\22", ir)
+        @test occursin("\\22kind\\22:\\22bytes\\22,\\22bytes\\22:[1,2,3]", ir)
+        @test !occursin("zero_init", ir)
     end
 
-    @testset "multi-result kernel: boolean operand excluded" begin
-        B, H, Nj, Nq, hd = 1, 1, 2, 2, 2
-        S4, S3 = (B, H, Nj, Nq, hd), (B, H, Nj, Nq)
-
-        # (q, k, v, bias, mask, o, lse, dout, dlse) -> (dq, dk, dv, dbias). `dlse` is accepted and
-        # ignored, exactly as the real rule ignores the residual's cotangent.
-        function vjp(q, k, v, b, m, o, lse, dout, dlse)
-            dq = Reactant.Ops.multiply(dout, dout)
-            dk = Reactant.Ops.add(dout, o)
-            dv = Reactant.Ops.add(dout, dout)
-            db = Reactant.Ops.multiply(lse, lse)
-            return (dq, dk, dv, db)
-        end
-
-        function fwd(q, k, v, b)
-            mask = Reactant.Ops.fill(false, S3)
-            o, lse = RX._metal_kernel_lib("_fwd", "/tmp/none.metallib",
-                (q, k, v, b, mask), [S4, S3],
-                [(:out, 0), (:out, 1), (:in, 0), (:in, 1), (:in, 2), (:in, 3), (:in, 4)];
-                grid=(1, 1, 1), reverse=vjp, active_operands=(0, 1, 2, 3))
-            return o
-        end
-
-        ir = emit(fwd, Reactant.to_rarray(rand(Float32, S4...)),
-            Reactant.to_rarray(rand(Float32, S4...)),
-            Reactant.to_rarray(rand(Float32, S4...)),
-            Reactant.to_rarray(rand(Float32, S3...)))
-
-        # The mask is operand 4 and is left out: booleans carry no cotangent.
-        @test occursin("enzyme.active_operands = array<i64: 0, 1, 2, 3>", ir)
-        # 5 primal operands + 2 primal results + 2 result cotangents -> 4 cotangents.
-        @test reverse_signature(ir) == (9, 4)
-        # Both results really are results of one call, not two separate calls.
-        @test occursin(r"custom_call @mps\.metal_kernel_lib\([^)]*\).*-> \(tensor", ir)
-
-        # Kept for the enzymexlamlir-opt half of the loop: run this module through the rule itself.
-        out = get(ENV, "KERNELDISPATCH_DUMP_MLIR", "")
-        isempty(out) || (write(out, ir); @info "wrote module" out)
+    @testset "an output that accumulates is zero-filled by jax-mps" begin
+        ir = emit(lib(Any[(:out_zero, 0), (:in, 0)]), x)
+        @test occursin("\\22zero_init\\22:true", ir)
     end
 
-    @testset "no rule attached when none is asked for" begin
-        function fwd(x)
-            o, = RX._metal_kernel_lib("_fwd", "/tmp/none.metallib", (x,), [(4,)],
-                [(:out, 0), (:in, 0)]; grid=(1, 1, 1))
-            return o
-        end
-
-        ir = emit(fwd, Reactant.to_rarray(rand(Float32, 4)))
-        @test !occursin("enzyme.reverse", ir)
-        @test !occursin("enzyme.active_operands", ir)
+    @testset "an InOutArray cannot be traced on Metal" begin
+        # jax-mps cannot alias a result to an operand: refused with the way around it, before anything is emitted.
+        e = try; RX._metal_kernel_lib("kern", "/tmp/none.metallib", (), [(4,)], Any[(:inout, (0, 0))];
+            grid=(1, 1, 1), result_eltypes=(Float32,)); nothing; catch e; e; end
+        @test e isa ArgumentError && occursin("InOutArray", e.msg)
     end
 
-    @testset "custom_call dispatches on the backend" begin
-        # A backend without a method (ROCm) says so; CUDA has one (test/ext/cuda/launch_encoding.test.jl).
-        @test_throws ArgumentError KernelDispatch.custom_call(KernelDispatch.ROCmBackendTag(),
-            "_fwd", "/tmp/none.metallib", (), [(4,)], Any[]; grid=(1, 1, 1))
-
-        fwd(x) = KernelDispatch.custom_call(KernelDispatch.MetalBackendTag(), "_fwd", "/tmp/none.metallib",
-            (x,), [(4,)], Any[(:in, 0), (:out, 0)]; grid=(1, 1, 1), threadgroup=4)[1]
-        @test occursin("mps.metal_kernel_lib", emit(fwd, Reactant.to_rarray(rand(Float32, 4))))
-    end
-
-    @testset "_embed_custom_call is not Metal-specific" begin
-        # `_metal_kernel_lib` is one caller of `_embed_custom_call`, not the only one it's built
-        # for — any `call_target_name` and hand-built `backend_config` string should work the same
-        # way, with no jax-mps convention baked into the generic seam itself.
-        vjp(x, o, dout) = (Reactant.Ops.multiply(dout, Reactant.Ops.fill(2.0f0, (4,))),)
-
-        function fwd(x)
-            o, = RX._embed_custom_call("my.custom_target", (x,), [(4,)];
-                backend_config="{\"anything\":\"goes\"}", reverse=vjp, active_operands=(0,))
-            return o
-        end
-
-        ir = emit(fwd, Reactant.to_rarray(rand(Float32, 4)))
-
-        @test occursin("stablehlo.custom_call @my.custom_target", ir)
-        @test occursin("anything", ir) && occursin("goes", ir)
-        @test occursin("enzyme.reverse = @", ir)
-        @test reverse_signature(ir) == (3, 1)
+    @testset "the Metal embedding is what custom_call(::MetalBackendTag) emits" begin
+        fwd(x) = KD.custom_call(KD.MetalBackendTag(), "kern", "/tmp/none.metallib", (x,), [(4,)],
+            Any[(:in, 0), (:out, 0)]; grid=(1, 1, 1), threadgroup=4, result_eltypes=(Float32,))[1]
+        @test occursin("mps.metal_kernel_lib", emit(fwd, x))
     end
 end

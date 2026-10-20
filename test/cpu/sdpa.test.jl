@@ -7,7 +7,8 @@
 #   host        no device needed: against a column-by-column reference
 #   backward    no device needed: against finite differences
 
-using Test, Random, KernelDispatch, SDPAOps
+using Test, Random, KernelDispatch, SDPAOps, BFloat16s
+isdefined(@__MODULE__, :REDUCTION_RTOL) || include(joinpath(@__DIR__, "..", "precision.jl"))
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))     # also keeps SDPAOps' manifests out of the user's cache
 isdefined(@__MODULE__, :sdpa_reference) || include(joinpath(@__DIR__, "..", "sdpa_helpers.jl"))
 
@@ -18,6 +19,18 @@ isdefined(@__MODULE__, :sdpa_reference) || include(joinpath(@__DIR__, "..", "sdp
         o = SDPA()(q, k, v)                         # host arrays: the host path
         @test size(o) == (dv, n)
         @test o ≈ sdpa_reference(q, k, v) rtol = 1e-4
+    end
+end
+
+@testset "host, half types" begin
+    # The host path is plain Julia: whatever `v * softmax(k'q)` gives for these arrays, which the caller casts as it likes
+    # (here it comes back wider than the inputs). It must be close to the Float64 reference from the same rounded inputs.
+    rng = Xoshiro(5)
+    for T in (Float16, BFloat16), (d, n, m, dv) in SDPA_SIZES
+        q, k, v = inputs(rng, d, n, m, dv, T)
+        o = SDPA()(q, k, v)
+        @test size(o) == (dv, n)
+        @test maxrelerr(o, sdpa_reference(q, k, v)) <= REDUCTION_RTOL[T]
     end
 end
 

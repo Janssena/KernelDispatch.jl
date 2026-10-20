@@ -21,6 +21,7 @@ makedocs(;
             "Forward, backward and Enzyme" => "tutorials/3-forward-backward-enzyme.md",
             "Triton kernels" => "tutorials/4-triton-kernels.md",
         ],
+        "Signatures" => "signatures.md",
         "Backends" => "backends.md",
         "API reference" => "api.md",
         "Backend interface" => "backend.md",

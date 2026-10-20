@@ -66,18 +66,18 @@ const FIXTURE_CACHE = mktempdir()
 KernelDispatch.cache_dir(::Residual) = joinpath(FIXTURE_CACHE, "residual")
 
 """
-Compile both binaries with `ka_compile` and register them as both kernels' Float32 variant. Selects
+Compile both binaries with `ka_compile` and register them as both kernels' variant for `T` (Float32 by default). Selects
 nothing: `:ka` is the default, and a switch here would not be visible to the caller's block anyway.
 """
-function register_residual!(; tg=64)
+function register_residual!(::Type{T}=Float32; tg=64) where {T}
     be = KernelDispatch.device_backend()
     dir = joinpath(FIXTURE_CACHE, "bin")
-    argt = (Vector{Float32}, Vector{Float32}, Vector{Float32}, Float32, Int32, Val{tg})
+    argt = (Vector{T}, Vector{T}, Vector{T}, Float32, Int32, Val{tg})
     fwd = ka_compile(be, residual_fwd!, argt; tg, name="residual_fwd_t$tg", params=(; tg), dir)
     bwd = ka_compile(be, residual_bwd!, argt; tg, name="residual_bwd_t$tg", params=(; tg), dir)
     for k in (ResidualKA(), ResidualPlain())
         register_kernel!(Residual(), k)
-        add_variant!(Residual(), k, (:Float32,);
+        add_variant!(Residual(), k, (nameof(T),);
             fwd, bwd)
     end
 end

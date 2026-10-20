@@ -69,7 +69,7 @@ function KD.execute(::AnyTracedRArray, l::KD.Launch)
     # Before any argument is converted: a binary the backend cannot launch from a trace should say so, not fail
     # on the first value that has no byte form.
     reason = KD.traced_support(be, l.binary)
-    reason === nothing || throw(ArgumentError(reason))
+    isnothing(reason) || throw(ArgumentError(reason))
     layout = Any[(:bytes, _le_bytes(p)) for p in l.prelude]
     operands, shapes, eltypes = Any[], Any[], DataType[]
     for a in (l.args..., l.extras...)
@@ -94,13 +94,17 @@ function KD.execute(::AnyTracedRArray, l::KD.Launch)
     b = l.binary
     # A Triton binary's hidden trailing pointers: null words after the arguments (see `triton_binary`).
     append!(layout, ((:bytes, _le_bytes(UInt64(0))) for _ in 1:KD.trailing_pointers(b)))
+    
     results = KD.custom_call(be, b.entry, b.file, Tuple(operands), shapes, layout;
-        grid=l.grid, threadgroup=b.threadgroup, shared_mem=b.shared_mem, result_eltypes=Tuple(eltypes))
+        grid=l.grid, threadgroup=b.threadgroup, shared_mem=b.shared_mem, result_eltypes=Tuple(eltypes)
+    )
+    
     return Tuple(map(_rev, results))
 end
 
 function __init__()
     KD._TRACING[] = () -> Reactant.within_compile()
+    KD._UNTRACED[] = f -> Reactant.call_with_native(f)
     return nothing
 end
 

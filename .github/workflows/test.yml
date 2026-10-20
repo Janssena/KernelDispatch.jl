@@ -1,6 +1,6 @@
 name: CPU tests
 
-# The `cpu` group of test/runtests.jl: needs no GPU (the Triton tests run from the committed fixtures, the Reactant
+# The `cpu` group of test/runtests.jl: needs no GPU (the Triton tests run from the fixtures artifact, downloaded on first use, the Reactant
 # tests on its CPU client). The `gpu` and `ext` groups need an NVIDIA or Apple GPU and are run by hand.
 
 on:

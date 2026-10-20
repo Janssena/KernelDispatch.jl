@@ -9,7 +9,7 @@
 # first or last, a mask indexed per batch item (`pid // H`) and a sequence length (40) that no block size divides.
 
 using Test, KernelDispatch, Reactant, LinearAlgebra
-isdefined(@__MODULE__, :TRITON_KERNELS) || include(joinpath(@__DIR__, "..", "..", "triton_fixtures.jl"))
+isdefined(@__MODULE__, :TRITON_SETS) || include(joinpath(@__DIR__, "..", "..", "triton_fixtures.jl"))
 isdefined(@__MODULE__, :TRIFAST_FIXTURES) || include(joinpath(@__DIR__, "..", "..", "trifast_fixtures.jl"))
 
 if GPU === :cuda && have_trifast_fixtures()
@@ -17,7 +17,7 @@ if GPU === :cuda && have_trifast_fixtures()
         case = trifast_case()
         insts = case["instances"]
         plans = Dict(i["name"] => trifast_plan(case, i) for i in insts)
-        specs(inst, image) = triton_spec(triton_binary(trifast_json(inst); image=trifast_image(inst, image)))
+        specs(inst, image) = triton_spec(triton_binary(trifast_json(inst); image=trifast_image(inst, image), signature=false))
         # The inputs every kernel may read (the forward's and `_bwd_q`'s outputs are saved as data too).
         base = ("d", "do", "k", "l", "mask", "o", "q", "v", "b")
 

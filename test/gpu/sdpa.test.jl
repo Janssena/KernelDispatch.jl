@@ -1,10 +1,11 @@
-# The tutorial example package (examples/SDPAOps) on the loaded GPU backend: its kernels against a
-# Float64 reference, the lazy variant build and its manifest, the example's own test file, and the kernels traced as
+# The tutorial example package (examples/SDPAOps) on the loaded GPU backend: its kernels, in each element type the
+# backend supports, against a Float64 reference computed from the same rounded inputs, the lazy variant build and its manifest, the example's own test file, and the kernels traced as
 # custom calls (on the backend's Reactant client). The device-free half is cpu/sdpa.test.jl.
 #
 # `FlashAttn` is a prebuilt `.metallib`: on any other backend only `SDPAKA` has a binary.
 
-using Test, Random, KernelDispatch, SDPAOps, Enzyme, Reactant
+using Test, Random, KernelDispatch, SDPAOps, Enzyme, Reactant, BFloat16s
+isdefined(@__MODULE__, :ELEMENTWISE_RTOL) || include(joinpath(@__DIR__, "..", "precision.jl"))
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))     # also keeps SDPAOps' manifests out of the user's cache
 isdefined(@__MODULE__, :sdpa_reference) || include(joinpath(@__DIR__, "..", "sdpa_helpers.jl"))
 
@@ -12,33 +13,64 @@ const SDPA_GPU_KERNELS = (prebuilt_sdpa_kernels()..., SDPAKA())
 
 @testset "device" begin
     rng = Xoshiro(3)
-    @testset "$kern, d=$d n=$n m=$m dv=$dv" for kern in SDPA_GPU_KERNELS, (d, n, m, dv) in SDPA_SIZES
-        q, k, v = inputs(rng, d, n, m, dv)
+    # The SDPA kernels are shipped for each type the backend reports it supports (`supported_eltypes()`).
+    @testset "$kern, $T, d=$d n=$n m=$m dv=$dv" for kern in SDPA_GPU_KERNELS, T in supported_eltypes(),
+            (d, n, m, dv) in SDPA_SIZES
+        q, k, v = inputs(rng, d, n, m, dv, T)
         o = KernelDispatch.forward(SDPA(), kern, DeviceArray(q), DeviceArray(k), DeviceArray(v))
         @test o isa DeviceArray && size(o) == (dv, n)
-        @test Array(o) ≈ sdpa_reference(q, k, v) rtol = 1e-3
+        @test eltype(o) === T                                # in, and out, in the inputs' type
+        @test maxrelerr(Array(o), sdpa_reference(q, k, v)) <= REDUCTION_RTOL[T]
     end
 
     @testset "variants are built on first use and persisted" begin
-        q, k, v = inputs(rng, 16, 10, 7, 8)
-        qd, kd, vd = DeviceArray(q), DeviceArray(k), DeviceArray(v)
-        for kern in SDPA_GPU_KERNELS
+        for kern in SDPA_GPU_KERNELS, T in supported_eltypes()
+            q, k, v = inputs(rng, 16, 10, 7, 8, T)
+            qd, kd, vd = DeviceArray(q), DeviceArray(k), DeviceArray(v)
             KernelDispatch.forward(SDPA(), kern, qd, kd, vd)
             vs = KernelDispatch.variants(SDPA(), kern)
-            @test collect(keys(vs)) == [(:Float32,)]
-            bin = vs[(:Float32,)][:fwd]
+            key = (nameof(T),)
+            @test haskey(vs, key)
+            bin = vs[key][:fwd]
             @test isfile(bin.file)
             @test isfile(joinpath(KernelDispatch.kernel_dir(SDPA(), kern), "manifest.toml"))
             t = mtime(bin.file)
             KernelDispatch.forward(SDPA(), kern, qd, kd, vd)             # found, not rebuilt
             @test KernelDispatch.variants(SDPA(), kern) === vs && mtime(bin.file) == t
         end
+        for kern in SDPA_GPU_KERNELS                                      # one variant per type, never shared
+            vs = KernelDispatch.variants(SDPA(), kern)
+            files = [vs[(nameof(T),)][:fwd].file for T in supported_eltypes()]
+            @test length(unique(files)) == length(files)
+        end
+    end
+
+    @testset "mixed element types are refused, not computed" begin
+        q, k, v = inputs(rng, 16, 10, 7, 8)
+        for kern in SDPA_GPU_KERNELS
+            @test_throws ArgumentError KernelDispatch.forward(SDPA(), kern, DeviceArray(q),
+                DeviceArray(Float16.(k)), DeviceArray(v))
+        end
     end
 
     @testset "no variant for an element type the kernel lacks" begin
-        # Both kernels are Float32 only: their `build!` declines any other key.
+        # `build!` declines any key but the three float types: Float64 is not in scope.
         for kern in SDPA_GPU_KERNELS
-            @test_throws ArgumentError KernelDispatch.variant(SDPA(), kern, (:Float16,))
+            @test_throws ArgumentError KernelDispatch.variant(SDPA(), kern, (:Float64,))
+        end
+    end
+
+    @testset "gradients come back in the inputs' type" begin
+        for T in supported_eltypes()
+            q, k, v = inputs(rng, 8, 6, 5, 4, T)
+            dout = T.(randn(rng, Float32, 4, 6))
+            args = map(DeviceArray, (q, k, v))
+            dq, dk, dv_ = KernelDispatch.backward(SDPA(), SDPAKA(), args, nothing, DeviceArray(dout))
+            @test eltype(dq) === T && eltype(dk) === T && eltype(dv_) === T
+            ref = KernelDispatch.backward(SDPA(), SDPAKA(), (Float64.(q), Float64.(k), Float64.(v)), nothing, Float64.(dout))
+            for (g, r) in zip((dq, dk, dv_), ref)
+                @test maxrelerr(Array(g), r) <= REDUCTION_RTOL[T]
+            end
         end
     end
 
@@ -67,11 +99,13 @@ else
             rng = Xoshiro(4)
             # The kernel is named in the call, not switched: nothing global changes under the trace.
             for kern in SDPA_GPU_KERNELS
-                @testset "$kern" for (d, n, m, dv) in SDPA_SIZES
-                    q, k, v = inputs(rng, d, n, m, dv)
+                @testset "$kern, $T" for T in supported_eltypes(), (d, n, m, dv) in SDPA_SIZES
+                    q, k, v = inputs(rng, d, n, m, dv, T)
                     args = map(Reactant.to_rarray, (q, k, v))
                     f(q, k, v) = KernelDispatch.forward(SDPA(), kern, q, k, v)
-                    @test Array(@jit f(args...)) ≈ sdpa_reference(q, k, v) rtol = 1e-3
+                    o = Array(@jit f(args...))
+                    @test eltype(o) === T
+                    @test maxrelerr(o, sdpa_reference(q, k, v)) <= REDUCTION_RTOL[T]
                     @test occursin(TRACED_CALL_TARGET, repr(Reactant.@code_hlo optimize = false f(args...)))
                 end
             end

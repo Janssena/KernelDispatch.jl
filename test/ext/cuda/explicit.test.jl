@@ -22,8 +22,7 @@ if GPU === :cuda
         # null pointers and the dynamic shared memory (60 KB: above the 48 KB default) are accepted.
         x = randn(rng, Float32, 100)
         for shared in (0, 1024, 60 * 1024), (kind, bin) in pairs(bins)
-            tb = KernelBinary(bin.file; entry="scale", threadgroup=64, abi=:triton, target=bin.target,
-                shared_mem=shared, params=(; scratch_pointers=2), tile=64)
+            tb = KernelBinary(bin; abi=:triton, shared_mem=shared, params=(; scratch_pointers=2), tile=64)
             (y,) = run_binary(tb, DeviceArray(x), OutArray(Float32, 100), 2.0f0, Int32(100); extent=100)
             @test Array(y) ≈ 2.0f0 .* x
         end
@@ -36,10 +35,10 @@ if GPU === :cuda
         run(b) = Array(only(run_binary(b, DeviceArray(x), OutArray(Float32, 16), 2.0f0, Int32(16); extent=16)))
         @test run(bins.cubin) ≈ 2.0f0 .* x
         # A cubin for another architecture is refused with the reason; PTX is portable whatever it names.
-        wrong = KernelBinary(bins.cubin.file; entry="scale", threadgroup=64, target="sm_20")
+        wrong = KernelBinary(bins.cubin; target="sm_20")
         err = try run(wrong); nothing catch e; e end
         @test err isa ArgumentError && occursin("built for sm_20", err.msg)
-        @test run(KernelBinary(bins.ptx.file; entry="scale", threadgroup=64, target="sm_20")) ≈ 2.0f0 .* x
+        @test run(KernelBinary(bins.ptx; target="sm_20")) ≈ 2.0f0 .* x
     end
 
     prev = Reactant.XLA.default_backend()
@@ -48,9 +47,9 @@ if GPU === :cuda
         @test KernelDispatch.backend_of(Reactant.to_rarray(rand(Float32, 4))) isa KernelDispatch.CUDABackendTag
 
         @testset "Triton ABI, traced" begin
-            file, target = bins.cubin.file, bins.cubin.target
+            file, target, sig = bins.cubin.file, bins.cubin.target, bins.cubin.signature
             loose() = KernelBinary(file; entry="scale", threadgroup=64, abi=:triton, target,
-                shared_mem=1024, params=(; scratch_pointers=2), tile=64)
+                shared_mem=1024, params=(; scratch_pointers=2), tile=64, signature=sig)
             x = randn(rng, Float32, 100)
             f(x) = only(run_binary(loose(), x, OutArray(Float32, 100), 2.0f0, Int32(100); extent=100))
             @test Array(@jit f(Reactant.to_rarray(x))) ≈ 2.0f0 .* x
@@ -59,9 +58,9 @@ if GPU === :cuda
         @testset "a KernelAbstractions binary, traced (built flat, inputs before the output)" begin
             ka = compile_scale_ins_first()
             @test ka.abi === :ka && ka.params.ka_layout == "flat"
-            file, entry, tg = ka.file, ka.entry, ka.threadgroup
+            file, entry, tg, sig = ka.file, ka.entry, ka.threadgroup, ka.signature
             # Built inside the traced function: a captured `KernelBinary` (abstract `params`) is not traceable.
-            loose() = KernelBinary(file; entry, threadgroup=tg, abi=:ka, params=(; ka_layout="flat", tg))
+            loose() = KernelBinary(file; entry, threadgroup=tg, abi=:ka, params=(; ka_layout="flat", tg), signature=sig)
             x = randn(rng, Float32, 100)
             f(x) = only(run_binary(loose(), x, OutArray(Float32, 100), 2.0f0, Int32(100), Val(tg); extent=100))
             @test Array(@jit f(Reactant.to_rarray(x))) ≈ 2.0f0 .* x

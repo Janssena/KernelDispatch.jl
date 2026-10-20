@@ -84,14 +84,16 @@ ka_binary_cache_dir(target::AbstractString=current_target()) =
     ka_compile(backend, kernel, argtypes::Tuple; tg, name, params=(;), tile=(tg, 1, 1), dir=ka_binary_cache_dir(target_id(backend))) -> KernelBinary
 
 Ahead-of-time compile the KernelAbstractions `kernel` at workgroup size `tg` to a binary at
-`joinpath(dir, name * ext)` whose entry point is `name`, and return it as a [`KernelBinary`](@ref) with
-`abi = :ka` (and the given tuning `params`), ready for [`add_variant!`](@ref). Rebuilt only when absent —
-put a source hash in `name`. `tile` defaults to one item per thread; a kernel whose threads each cover
+`joinpath(dir, "<name>_<types>" * ext)` whose entry point is `<name>_<types>`, and return it as a
+[`KernelBinary`](@ref) with `abi = :ka` (and the given tuning `params`), ready for [`add_variant!`](@ref).
+`<types>` is the signature of `argtypes` (see [`ka_signature_tag`](@ref): `f16x3_f32s_i32s_v64` for three
+`Float16` buffers, a `Float32` and an `Int32` scalar and a `Val{64}`), so builds of one kernel at different
+element types never share a file. Rebuilt only when absent — put a source hash in `name`. `tile` defaults to one item per thread; a kernel whose threads each cover
 several items says so here.
 
 This is the KernelAbstractions producer of binaries and it belongs to the launch side: the binary is 
 built against the launch context ([`ka_context`](@ref)) and argument pointer types that `call_binary` 
-binds for an `abi = :ka` binary, so compiling by other means binds wrongly, silently. `dir` is where the 
+binds for an `abi = :ka` binary, so compiling by other means binds wrongly. `dir` is where the 
 file is built, by default [`ka_binary_cache_dir`](@ref): not part of the registry, which is where kernels 
 live. [`add_variant!`](@ref) copies what it registers into it.
 
@@ -100,6 +102,9 @@ parameters are only device pointers and scalars, so the same file launches eager
 price is that a kernel whose compiled code can still throw (a bounds check, a `DomainError`, `error`) is refused here,
 at build time, because a device cannot report an exception without that state; index with `unsafe_load` /
 `unsafe_store!` as the binary contract already says. `params` gains a reserved `ka_layout` entry ([`ka_layout`](@ref)).
+
+The binary records its `signature` (the `argtypes` without the `Val`s), and a launch with other types is refused: a
+`Float16` array for a `Float32` buffer, an `Int64` for an `Int32`. See [`KernelBinary`](@ref).
 
 `argtypes` lists the kernel's arguments after KA's context, in signature order: `AbstractArray{T}`
 for a buffer (bound as a raw device pointer to `T`; the kernel indexes it with `unsafe_load` /
@@ -113,10 +118,39 @@ function ka_compile(be::KernelBackend, kernel, argtypes::Tuple;
     tile=(tg, 1, 1),
     dir::AbstractString=ka_binary_cache_dir(target_id(be))
 )
-    path = _ka_compile(be, kernel, argtypes, Int(tg), String(name), String(dir))
+    path = _ka_compile(be, kernel, argtypes, Int(tg), ka_binary_name(name, argtypes), String(dir))
     layout = ka_layout(be)
     isnothing(layout) || (params = merge(params, (; ka_layout=String(layout))))
-    return KernelBinary(path; threadgroup=tg, tile, params, abi=:ka, target=target_id(be))
+    return KernelBinary(path; threadgroup=tg, tile, params, abi=:ka, target=target_id(be),
+        signature=bound_tokens(argtypes))
 end
+
+"""
+    ka_signature_tag(argtypes::Tuple) -> String
+
+The part of a [`ka_compile`](@ref) binary's name that says which types it was built for: one token per
+argument, in order, runs of equal tokens written `tokenxcount`. A buffer (`AbstractArray{T}`) is the token of its
+element type: `Float32` is `f32`, `Float16` `f16`, `BFloat16` `bf16`, `Float64` `f64`, `Int32` `i32`, `Int64`
+`i64`, `UInt32` `u32`, `Bool` `bool`; any other type its lowercased name and eight hex digits of a hash of its full
+spelling, so `Complex{Float32}` and `Complex{Float64}` differ. A scalar of that type has an `s` after it
+(`f32s`), and `Val{x}` is `v<x>`. For instance `(Vector{Float16}, Vector{Float16}, Float32, Int32, Val{64})` gives
+`"f16x2_f32s_i32s_v64"`.
+"""
+function ka_signature_tag(argtypes::Tuple)
+    toks = String[_file_token(T) for T in argtypes]
+    parts = String[]
+    i = 1
+    while i <= length(toks)
+        j = i
+        while j < length(toks) && toks[j+1] == toks[i]
+            j += 1
+        end
+        push!(parts, j > i ? "$(toks[i])x$(j - i + 1)" : toks[i])
+        i = j + 1
+    end
+    return join(parts, "_")
+end
+
+ka_binary_name(name::AbstractString, argtypes::Tuple) = String(name) * "_" * ka_signature_tag(argtypes)
 
 function _ka_compile end

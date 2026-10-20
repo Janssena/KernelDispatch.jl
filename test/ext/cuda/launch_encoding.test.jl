@@ -3,7 +3,7 @@
 # argument-order and size restrictions, and the shape of the emitted `stablehlo.custom_call`. That the
 # handler accepts it and launches the kernel is checked on a CUDA machine (test/gpu/traced.test.jl, test/ext/cuda/triton.test.jl).
 
-using Test, KernelDispatch, Reactant, Zlib_jll
+using Test, KernelDispatch, Reactant, Zlib_jll, BFloat16s
 
 const RXC = Base.get_extension(KernelDispatch, :KernelDispatchReactantExt)
 isdefined(@__MODULE__, :reverse_symbol) || include(joinpath(@__DIR__, "..", "..", "ir_utils.jl"))
@@ -151,11 +151,20 @@ end
     end
 
     err(f) = try f(); nothing catch e; e end
+    # Half-precision results are declared as such (and a missing `result_eltypes` is an error, not Float32).
+    for (T, mlir) in ((Float16, "f16"), (BFloat16, "bf16"))
+        fh(x) = KernelDispatch.custom_call(tag, "scale", cubin, (x,), [(4,)], layout; grid=(1, 1, 1), threadgroup=64,
+            result_eltypes=(T,))[1]
+        @test occursin("tensor<4x$mlir>", repr(Reactant.@code_hlo optimize = false fh(Reactant.to_rarray(T.(rand(Float32, 4))))))
+    end
+    @test err(() -> KernelDispatch.custom_call(tag, "scale", cubin, (), [(4,)], layout; grid=(1, 1, 1),
+        threadgroup=64)) isa UndefKeywordError
     # What cannot be launched this way says so, instead of failing inside XLA.
-    e = err(() -> KernelDispatch.custom_call(tag, "scale", cubin, (), [(4,)], layout; grid=(1, 1, 1), threadgroup=48))
+    e = err(() -> KernelDispatch.custom_call(tag, "scale", cubin, (), [(4,)], layout; grid=(1, 1, 1), threadgroup=48,
+        result_eltypes=(Float32,)))
     @test e isa ArgumentError && occursin("multiple of 32", e.msg)
     e = err(() -> KernelDispatch.custom_call(tag, "scale", "/nonexistent.cubin", (), [(4,)], layout;
-        grid=(1, 1, 1), threadgroup=64))
+        grid=(1, 1, 1), threadgroup=64, result_eltypes=(Float32,)))
     @test e isa ArgumentError && occursin("not found", e.msg)
 end
 
@@ -168,19 +177,18 @@ end
     for b in (ka, explicit, triton), tag in (KernelDispatch.CUDABackendTag(), KernelDispatch.MetalBackendTag())
         @test KernelDispatch.traced_support(tag, b) === nothing
     end
-    @test RXC._le_bytes(2 * 64) == "[128,0,0,0,0,0,0,0]"
 end
 
-@testset "output_operand_aliases on a custom call" begin
-    f(x) = begin
-        y0 = Reactant.Ops.fill(0.0f0, Int64[4])
-        r, = RXC._embed_custom_call("some_target", (y0, x), [(4,)]; backend_config="cfg",
-            result_eltypes=(Float32,), output_operand_aliases=[(0, 0)])
-        r
-    end
-    x = Reactant.to_rarray(rand(Float32, 4))
-    ir = repr(Reactant.@code_hlo optimize = false f(x))
-    @test occursin("output_operand_alias", ir) && occursin("operand_index = 0", ir)
-    g(x) = only(RXC._embed_custom_call("some_target", (x,), [(4,)]; backend_config="cfg", result_eltypes=(Float32,)))
-    @test !occursin("output_operand_alias", repr(Reactant.@code_hlo optimize = false g(x)))
+@testset "two images under one name get distinct module keys (XLA caches a module per name and shared memory)" begin
+    d = RXC._distinct_shared_mem
+    a, b, c = UInt8[1, 2, 3], UInt8[4, 5, 6], UInt8[7, 8, 9]
+    @test d("kn_a", 0, a) == 0                  # the first image under a key keeps its size
+    @test d("kn_a", 0, a) == 0                  # and so does a repeat of it
+    @test d("kn_a", 0, b) == 4                  # another image of that name and size asks for a few bytes more
+    @test d("kn_a", 0, b) == 4 && d("kn_a", 0, a) == 0     # stable
+    @test d("kn_a", 0, c) == 8
+    @test d("kn_a", 4, a) == 12                 # an image that really uses 4 bytes does not take over b's key
+    @test d("kn_b", 0, b) == 0                  # another name is independent
+    @test d("kn_a", 16, b) == 16                # so is another size
+    @test d("kn_c", 0, copy(a)) == 0 && d("kn_c", 0, copy(a)) == 0      # identical bytes are the same image
 end

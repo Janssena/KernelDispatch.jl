@@ -9,7 +9,7 @@
 #     pointers after the arguments (`trailing_pointers`, kept in `params.scratch_pointers`).
 
 """
-    triton_binary(metadata_json; image=nothing, tile=1, params=(;), scratch_pointers=nothing) -> KernelBinary
+    triton_binary(metadata_json; image=nothing, tile=1, params=(;), scratch_pointers=nothing, signature=nothing) -> KernelBinary
 
 Describe a kernel Triton compiled for NVIDIA as a [`KernelBinary`](@ref) (`abi = :triton`), from the metadata
 JSON Triton wrote beside its output (`<name>.json` next to `<name>.cubin` and `<name>.ptx`). Where those files are is
@@ -25,19 +25,24 @@ may rewrite or clear them.) Register it like any binary:
   `extent` the grid of programs, which is how Triton is launched.
 - `scratch_pointers`: how many hidden trailing pointer parameters the compiled kernel takes after its own.
   Read from the metadata: one for each of the `global_scratch_size` and `profile_scratch_size` entries it has (both
-  are present in Triton 3.8.0, whose kernels end in exactly two pointers). Pass it to override for another version.
+  are present in Triton 3.8.0, whose kernels end in exactly two pointers; Triton 3.2.0 has neither and none). Pass it to override for another version.
 
 The kernel's entry, `threadgroup` (`num_warps` times the target's warp size) and `shared_mem` come from the metadata,
-which must have the keys Triton 3.8.0 writes (`name`, `num_warps`, `target` with `backend`, `arch` and `warp_size`).
+which must have the keys Triton 3.2.0 and 3.8.0 write (`name`, `num_warps`, `target` with `backend`, `arch` and `warp_size`).
 What cannot be launched is refused here, with an explanation: a non-NVIDIA target, `num_ctas` above 1 (thread-block
 clusters), and a kernel that needs global scratch memory (`global_scratch_size > 0`).
+
+- `signature`: the types of the arguments `call_binary` binds, as for [`KernelBinary`](@ref) (`signature=(Vector{Float32},
+  Vector{Float32}, Float32, Int32)`, the hidden trailing pointers and `constexpr` arguments not among them), or `false`
+  to leave the binary unchecked. Triton's metadata does not say, so without it the first launch warns once and suggests
+  the one that fits.
 
 The arguments `call_binary` binds must be exactly the ones the *compiled* kernel declares: Triton drops
 `constexpr` arguments from the signature, and (depending on its version) integers it specialized to 1. The order
 of the buffers is the kernel's own: a Reactant trace passes each output as an aliased operand in its position.
 """
 function triton_binary(json::AbstractString; image::Union{Nothing,AbstractString}=nothing, tile=1,
-        params::NamedTuple=NamedTuple(), scratch_pointers::Union{Nothing,Integer}=nothing)
+        params::NamedTuple=NamedTuple(), scratch_pointers::Union{Nothing,Integer}=nothing, signature=nothing)
     isfile(json) || throw(ArgumentError("Triton metadata `$json` not found"))
     meta = try
         _json_parse(read(json, String))
@@ -87,7 +92,7 @@ function triton_binary(json::AbstractString; image::Union{Nothing,AbstractString
         (p = merge(p, (; triton_version=String(meta["triton_version"]))))
 
     return KernelBinary(file; entry=String(name), threadgroup=target["warp_size"] * nw, tile, params=p, abi=:triton,
-        target=sm, shared_mem=Int(get(meta, "shared", 0)))
+        target=sm, shared_mem=Int(get(meta, "shared", 0)), signature)
 end
 
 # The null pointers a binary takes after its arguments: Triton's hidden scratch parameters. Passed as zero
@@ -183,7 +188,7 @@ function _json_parse(s::AbstractString)
             j > i || error("unexpected character '$c' at byte $i")
             tok = str[i:j-1]; i = j
             x = something(tryparse(Int, tok), tryparse(Float64, tok), Some(nothing))
-            x === nothing && error("bad number `$tok`")
+            isnothing(x) && error("bad number `$tok`")
             return x
         end
     end

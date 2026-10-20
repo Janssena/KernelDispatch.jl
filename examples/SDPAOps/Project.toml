@@ -3,6 +3,7 @@ uuid = "505b5885-5c5e-49a2-9898-f92d217b9ae6"
 version = "0.1.0"
 
 [deps]
+BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 KernelDispatch = "8d34074f-262e-46e2-9f95-b1abcc740b38"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
@@ -11,6 +12,7 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 KernelDispatch = {path = "../.."}
 
 [compat]
+BFloat16s = "0.6"
 KernelAbstractions = "0.9"
 julia = "1.11"
 

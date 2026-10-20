@@ -1,7 +1,7 @@
 # What a backend can launch, asked before it is: formats, target architectures, traced support. Static, so
 # they run without a device; a test-only array type stands in for the device arrays whose backend is asked.
 
-using Test, KernelDispatch
+using Test, KernelDispatch, BFloat16s
 
 fake_file(ext) = (p = joinpath(mktempdir(), "k" * ext); write(p, UInt8[1, 2, 3]); p)
 
@@ -19,7 +19,7 @@ KD.backend_of(::FakeCuArray) = KD.CUDABackendTag()
     @test KD.supported_formats(KD.ROCmBackendTag()) == (:hsaco,)
     @test KD.supported_formats(KD.CPUBackend()) == ()                          # the host is unchecked
 
-    cubin, ptx, metallib = (KernelBinary(fake_file(e); threadgroup=32) for e in (".cubin", ".ptx", ".metallib"))
+    cubin, ptx, metallib = (KernelBinary(fake_file(e); threadgroup=32, signature=false) for e in (".cubin", ".ptx", ".metallib"))
     @test KD.check_binary(KD.CUDABackendTag(), cubin) === nothing
     @test KD.check_binary(KD.CUDABackendTag(), ptx) === nothing
     @test KD.check_binary(KD.MetalBackendTag(), metallib) === nothing
@@ -35,7 +35,8 @@ KD.backend_of(::FakeCuArray) = KD.CUDABackendTag()
 end
 
 @testset "target architectures" begin
-    @test KD.target_id(KD.CUDABackendTag()) == ""        # no extension loaded here: nothing to ask
+    # Without the CUDA extension there is no device to ask; with it (a CUDA machine running the GPU section) it is the device's.
+    @test KD.target_id(KD.CUDABackendTag()) == (:cuda in KD.LOADED_BACKENDS ? KD.current_target() : "")
     @test KD.cuda_sm_compatible("", "sm_90")              # portable
     @test KD.cuda_sm_compatible("sm_80", "sm_80")
     @test KD.cuda_sm_compatible("sm_80", "sm_86")         # same major, newer minor
@@ -51,4 +52,18 @@ end
     b = KernelBinary(fake_file(".metallib"); threadgroup=32, abi=:ka)
     @test KD.traced_support(KD.MetalBackendTag(), b) === nothing
     @test KD.traced_support(KD.CPUBackend(), b) === nothing
+end
+
+@testset "ka_compile names a binary after its signature" begin
+    tag = KD.ka_signature_tag
+    @test tag((Vector{Float32}, Vector{Float32}, Float32, Int32, Val{64})) == "f32x2_f32s_i32s_v64"
+    @test tag((Vector{Float16}, Vector{Float16}, Float32, Int32, Val{64})) == "f16x2_f32s_i32s_v64"
+    @test tag((Vector{BFloat16}, Vector{Float32}, Vector{BFloat16}, Int32)) == "bf16_f32_bf16_i32s"
+    @test tag((AbstractArray{Float16}, AbstractArray{Float16}, AbstractArray{Float16}, Int32, Int32)) == "f16x3_i32sx2"
+    @test tag((Float64, UInt32, Bool, Val{:sym})) == "f64s_u32s_bools_vsym"
+    # one kernel at different element types must never share a file name
+    names = Set(KD.ka_binary_name("scale", (Vector{T}, Vector{T}, Float32)) for T in (Float32, Float16, BFloat16))
+    @test length(names) == 3 && "scale_bf16x2_f32s" in names
+    @test KD.ka_binary_name("k", (Vector{Float32}, Int32)) != KD.ka_binary_name("k", (Vector{Float32}, Int64))
+    @test KD.ka_binary_name("k", (Vector{Float32}, Float32)) != KD.ka_binary_name("k", (Vector{Float32}, Vector{Float32}))
 end
