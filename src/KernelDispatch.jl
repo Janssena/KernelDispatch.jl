@@ -17,6 +17,7 @@ include("kernel.jl")
 include("formats.jl")
 include("preferences.jl")
 include("call.jl")
+include("signature.jl")
 include("ka.jl")
 include("triton.jl")
 

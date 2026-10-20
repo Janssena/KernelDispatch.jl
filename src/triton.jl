@@ -9,7 +9,7 @@
 #     pointers after the arguments (`trailing_pointers`, kept in `params.scratch_pointers`).
 
 """
-    triton_binary(metadata_json; image=nothing, tile=1, params=(;), scratch_pointers=nothing) -> KernelBinary
+    triton_binary(metadata_json; image=nothing, tile=1, params=(;), scratch_pointers=nothing, signature=nothing) -> KernelBinary
 
 Describe a kernel Triton compiled for NVIDIA as a [`KernelBinary`](@ref) (`abi = :triton`), from the metadata
 JSON Triton wrote beside its output (`<name>.json` next to `<name>.cubin` and `<name>.ptx`). Where those files are is
@@ -32,12 +32,17 @@ which must have the keys Triton 3.8.0 writes (`name`, `num_warps`, `target` with
 What cannot be launched is refused here, with an explanation: a non-NVIDIA target, `num_ctas` above 1 (thread-block
 clusters), and a kernel that needs global scratch memory (`global_scratch_size > 0`).
 
+- `signature`: the types of the arguments `call_binary` binds, as for [`KernelBinary`](@ref) (`signature=(Vector{Float32},
+  Vector{Float32}, Float32, Int32)`, the hidden trailing pointers and `constexpr` arguments not among them), or `false`
+  to leave the binary unchecked. Triton's metadata does not say, so without it the first launch warns once and suggests
+  the one that fits.
+
 The arguments `call_binary` binds must be exactly the ones the *compiled* kernel declares: Triton drops
 `constexpr` arguments from the signature, and (depending on its version) integers it specialized to 1. The order
 of the buffers is the kernel's own: a Reactant trace passes each output as an aliased operand in its position.
 """
 function triton_binary(json::AbstractString; image::Union{Nothing,AbstractString}=nothing, tile=1,
-        params::NamedTuple=NamedTuple(), scratch_pointers::Union{Nothing,Integer}=nothing)
+        params::NamedTuple=NamedTuple(), scratch_pointers::Union{Nothing,Integer}=nothing, signature=nothing)
     isfile(json) || throw(ArgumentError("Triton metadata `$json` not found"))
     meta = try
         _json_parse(read(json, String))
@@ -87,7 +92,7 @@ function triton_binary(json::AbstractString; image::Union{Nothing,AbstractString
         (p = merge(p, (; triton_version=String(meta["triton_version"]))))
 
     return KernelBinary(file; entry=String(name), threadgroup=target["warp_size"] * nw, tile, params=p, abi=:triton,
-        target=sm, shared_mem=Int(get(meta, "shared", 0)))
+        target=sm, shared_mem=Int(get(meta, "shared", 0)), signature)
 end
 
 # The null pointers a binary takes after its arguments: Triton's hidden scratch parameters. Passed as zero

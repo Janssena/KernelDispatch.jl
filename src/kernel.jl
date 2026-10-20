@@ -70,6 +70,13 @@ One compiled launch, everything about it persisted with it in the manifest.
 - `shared_mem` is the dynamic shared memory, in bytes, each threadgroup is launched with (a Triton kernel's
   `shared`; see [`triton_binary`](@ref)). `0` for a kernel that declares its threadgroup memory itself, as
   every Metal and KernelAbstractions kernel does. Metal ignores it.
+- `signature` says which argument types the binary was compiled for, so a launch with other types is refused
+  instead of computing something else (a `Float16` array read as `Float32`, an `Int64` where the kernel takes a
+  4-byte scalar). It lists the arguments [`call_binary`](@ref) binds, in order, `Val`s left out (they take no slot),
+  as the types you pass: `signature=(Vector{Float16}, Vector{Float16}, Float32, Int32)`, the vocabulary of
+  [`ka_compile`](@ref)'s `argtypes`. [`ka_compile`](@ref) records it itself. `nothing` (the default) means unknown: the
+  first launch warns once, naming the `signature=` that fits it, and nothing is checked. `signature=false` declares
+  the binary unchecked, silently. `check_types=false` at a launch skips the check for that launch.
 """
 struct KernelBinary
     file::String
@@ -80,15 +87,18 @@ struct KernelBinary
     tile::NTuple{3,Int}
     target::String
     shared_mem::Int
+    # `nothing` unknown, `false` declared unchecked, else one token per bound argument (see `bound_tokens`). A Tuple, not
+    # a Vector: binaries compare by field identity, and equal tuples of strings are identical.
+    signature::Union{Nothing,Bool,Tuple{Vararg{String}}}
     # Fields of `params` kept sorted, so a binary compares equal to itself after a manifest round-trip.
     function KernelBinary(file, entry, threadgroup, params::NamedTuple, abi::Symbol, tile,
-            target::AbstractString="", shared_mem::Integer=0)
+            target::AbstractString="", shared_mem::Integer=0, signature=nothing)
         abi === :plain && (abi = :explicit)          # the earlier name of the default ABI
         t = _pad3(tile)
         all(>=(1), t) || throw(ArgumentError("`tile` must be positive along every axis, got $t"))
         shared_mem >= 0 || throw(ArgumentError("`shared_mem` must be non-negative, got $shared_mem"))
         return new(String(file), String(entry), Int(threadgroup), _sorted(params), abi, t, String(target),
-            Int(shared_mem))
+            Int(shared_mem), _as_signature(signature))
     end
 end
 
@@ -100,10 +110,21 @@ function KernelBinary(file::AbstractString;
     abi::Symbol=:explicit,
     target::AbstractString="",
     shared_mem::Integer=0,
+    signature=nothing,
     is_ka::Union{Nothing,Bool}=nothing)       # deprecated alias for `abi=:ka`
     is_ka === true && (abi = :ka)
-    return KernelBinary(file, entry, threadgroup, params, abi, tile, target, shared_mem)
+    return KernelBinary(file, entry, threadgroup, params, abi, tile, target, shared_mem, signature)
 end
+
+"""
+    KernelBinary(b::KernelBinary; file=b.file, entry=b.entry, threadgroup=b.threadgroup, params=b.params, abi=b.abi,
+        tile=b.tile, target=b.target, shared_mem=b.shared_mem, signature=b.signature)
+
+`b` with some fields changed. Unlike rebuilding a binary field by field, it cannot forget one (the `signature`, say).
+"""
+KernelBinary(b::KernelBinary; file=b.file, entry=b.entry, threadgroup=b.threadgroup, params=b.params, abi=b.abi,
+    tile=b.tile, target=b.target, shared_mem=b.shared_mem, signature=b.signature) =
+    KernelBinary(file, entry, threadgroup, params, abi, tile, target, shared_mem, signature)
 
 # `b.is_ka`, the pre-`abi` spelling: derived, so there is one source of truth.
 function Base.getproperty(b::KernelBinary, s::Symbol)
@@ -506,7 +527,7 @@ function _add_variant!(op::AbstractKernelOp, k::AbstractKernel, key::Tuple, bina
         id = first(string(hash(read(b.file), hash((key, name))); base=16, pad=16), 8)
         dst = joinpath(dir, "$(name)_$(id)$(lowercase(splitext(b.file)[2]))")
         abspath(b.file) == abspath(dst) || cp(b.file, dst; force=true)
-        v[name] = KernelBinary(dst, b.entry, b.threadgroup, b.params, b.abi, b.tile, b.target, b.shared_mem)
+        v[name] = KernelBinary(dst, b.entry, b.threadgroup, b.params, b.abi, b.tile, b.target, b.shared_mem, b.signature)
     end
     variants(op, k; target)[key] = v
     save_manifest(op, k; target)
@@ -518,7 +539,8 @@ add_variant!(op::AbstractKernelOp, k::AbstractKernel; kwargs...) =
     add_variant!(op, k, (); kwargs...)
 
 # 2: `abi` and `target` per binary replace `is_ka` (a version-1 manifest, with `is_ka`, still loads).
-const MANIFEST_VERSION = 2
+# 3: a binary may carry its `signature` (a list of tokens, or `false`); a binary without one loads as unknown.
+const MANIFEST_VERSION = 3
 
 function save_manifest(op, k; target::AbstractString=current_target())
     vs = variants(op, k; target)
@@ -526,7 +548,8 @@ function save_manifest(op, k; target::AbstractString=current_target())
         Dict{String,Any}("key" => _key_str(key), "binary" => [
             Dict{String,Any}("name" => String(n), "file" => basename(b.file), "entry" => b.entry,
                 "threadgroup" => b.threadgroup, "tile" => collect(b.tile), "abi" => String(b.abi),
-                "target" => b.target, "shared_mem" => b.shared_mem, "params" => Dict(String(p) => x for (p, x) in pairs(b.params)))
+                "target" => b.target, "shared_mem" => b.shared_mem, "params" => Dict(String(p) => x for (p, x) in pairs(b.params)),
+                (isnothing(b.signature) ? () : ("signature" => (b.signature isa Bool ? b.signature : collect(b.signature)),))...)
             for (n, b) in sort(collect(v); by=first)])
         for (key, v) in sort(collect(vs); by=string ∘ first)])
     open(io -> TOML.print(io, tbl), manifest_path(op, k; target), "w")
@@ -559,7 +582,8 @@ function load_manifest(op, k; target::AbstractString=current_target())
                 abi = haskey(bd, "abi") ? Symbol(bd["abi"]) : (get(bd, "is_ka", false) ? :ka : :explicit)
                 v[Symbol(bd["name"])] = KernelBinary(file, bd["entry"], bd["threadgroup"],
                     NamedTuple(Symbol(p) => x for (p, x) in bd["params"]), abi,
-                    get(bd, "tile", (bd["threadgroup"], 1, 1)), get(bd, "target", ""), get(bd, "shared_mem", 0))
+                    get(bd, "tile", (bd["threadgroup"], 1, 1)), get(bd, "target", ""), get(bd, "shared_mem", 0),
+                    _loaded_signature(get(bd, "signature", nothing)))
             end
             isnothing(v) || (out[_key_parse(vd["key"])] = v)
         end

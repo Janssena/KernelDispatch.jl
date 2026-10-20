@@ -66,7 +66,7 @@ function (op::AbstractKernelOp)(args...)
 end
 
 """
-    call_binary(op, kernel, name, args...; key=variant_key(op, kernel, args...), extent) -> Tuple
+    call_binary(op, kernel, name, args...; key=variant_key(op, kernel, args...), extent, check_types=true) -> Tuple
 
 Launch binary `name` of the variant for `key`, binding `(args..., extras(op, kernel, binary)...)`
 IN THE ORDER GIVEN: an [`OutArray`](@ref) is allocated (or a traced result), an array is bound in place,
@@ -77,6 +77,9 @@ right is the caller's job.
 It launches `cld.(extent, tile)` threadgroups: the problem size `extent` (an integer or a tuple of up to
 three axes, required) divided by what one threadgroup of the binary covers, its `tile`.
 
+The arguments are checked against the binary's `signature` (see [`KernelBinary`](@ref)): a launch whose types are not
+the ones it was compiled for throws, naming the argument. `check_types=false` skips that check.
+
 The op-level layer: it finds the binary and its [`extras`](@ref), then [`run_binary`](@ref) does the
 rest. The outputs are picked from `args` alone: `extras` (which may read `KernelBinary.params`, typed
 only at run time) are only bound, so whatever they return never reaches the result's type. They must
@@ -84,13 +87,13 @@ therefore not contain `OutArray`s.
 """
 function call_binary(
     op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args...;
-    key::Tuple=variant_key(op, k, args...), extent=nothing
+    key::Tuple=variant_key(op, k, args...), extent=nothing, check_types::Bool=true
 )
     _check_extent(op, k, extent)
     b = _binary(op, k, name, key)
     
     return run_binary(
-        b, args...; extent, extras=extras(op, k, b), label=name
+        b, args...; extent, extras=extras(op, k, b), label=name, check_types
     )
 end
 
@@ -113,7 +116,7 @@ function _binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, key::Tup
 end
 
 """
-    run_binary(b::KernelBinary, args...; extent, extras=(), label=Symbol(b.entry)) -> Tuple
+    run_binary(b::KernelBinary, args...; extent, extras=(), label=Symbol(b.entry), check_types=true) -> Tuple
 
 Launch `b` on `args` and return the outputs: `execute(prepare_launch(b, args...; …))`. The
 binary-level layer under [`call_binary`](@ref), which adds the registry lookup; call it directly to run
@@ -148,15 +151,16 @@ struct Launch{A<:Tuple,E<:Tuple,P<:AbstractVector}
 end
 
 """
-    prepare_launch(b::KernelBinary, args...; extent, extras=(), label=Symbol(b.entry)) -> Launch
+    prepare_launch(b::KernelBinary, args...; extent, extras=(), label=Symbol(b.entry), check_types=true) -> Launch
 
-Turn a problem size into a concrete [`Launch`](@ref) of `b`, without running it: `cld.(extent, b.tile)`
+Turn a problem size into a concrete [`Launch`](@ref) of `b`, without running it, after checking the arguments against the
+binary's `signature` (`check_types=false` skips that check): `cld.(extent, b.tile)`
 threadgroups, the prelude and grid of the binary's ABI (KA's context and flat grid for `:ka`), device wrappers densified
 ([`device_dense`](@ref)). The binary need not be registered. Binding follows [`call_binary`](@ref):
 `(args..., extras...)` in the order given.
 """
 function prepare_launch(b::KernelBinary, args...; 
-    extent=nothing, extras::Tuple=(), label::Symbol=Symbol(b.entry)
+    extent=nothing, extras::Tuple=(), label::Symbol=Symbol(b.entry), check_types::Bool=true
 )
     isnothing(extent) && throw(ArgumentError(
         "no launch size for binary `$(b.entry)`: pass `extent=` (the problem size, divided by the " *
@@ -168,6 +172,7 @@ function prepare_launch(b::KernelBinary, args...;
     
     be = backend_of(proto)
     be isa GPUBackend && check_binary(be, b)
+    check_types && check_signature(be, b, args, extras)
     groups = cld.(_pad3(extent), b.tile)
     prelude, grid = _prelude_and_grid(be, b, groups)
     _make_dense = Base.Fix1(_dense_arg, be)
@@ -335,18 +340,19 @@ function time_binary(ls::AbstractVector{<:Launch}; reps::Integer=3, warmup::Inte
 end
 
 function time_binary(b::KernelBinary, args...; 
-    extent=nothing, extras::Tuple=(), reps::Integer=3, warmup::Integer=1
+    extent=nothing, extras::Tuple=(), reps::Integer=3, warmup::Integer=1, check_types::Bool=true
 )
     _timing_backend(args)
-    return time_binary(prepare_launch(b, args...; extent, extras); reps, warmup)
+    return time_binary(prepare_launch(b, args...; extent, extras, check_types); reps, warmup)
 end
 
 function time_binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args...; 
-    key::Tuple=variant_key(op, k, args...), extent=nothing, reps::Integer=3, warmup::Integer=1
+    key::Tuple=variant_key(op, k, args...), extent=nothing, reps::Integer=3, warmup::Integer=1,
+    check_types::Bool=true
 )
     _check_extent(op, k, extent)
     b = _binary(op, k, name, key)
-    return time_binary(b, args...; extent, extras=extras(op, k, b), reps, warmup)
+    return time_binary(b, args...; extent, extras=extras(op, k, b), reps, warmup, check_types)
 end
 
 # The device backend timing runs on: refuses tracing and host arrays.
