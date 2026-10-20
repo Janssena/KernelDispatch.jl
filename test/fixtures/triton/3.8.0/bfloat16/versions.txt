@@ -1,0 +1,5 @@
+triton 3.8.0
+torch 2.14.1+cu130
+python 3.10.2
+dtype bfloat16
+gpu NVIDIA A40 sm_86

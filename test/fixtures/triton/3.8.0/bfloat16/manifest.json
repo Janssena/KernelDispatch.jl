@@ -1,0 +1,238 @@
+[
+  {
+    "name": "scale_kernel",
+    "directory": "scale_kernel",
+    "triton_cache_dir": "/tmp/kd_triton_cache_e4suoxnl/OMSUZEQCI5R2GYIPB5BROPANKRQ3CUXKSEXYPB24BM7BXI4DSEXA",
+    "ptx_params": [
+      ".param .u64 .ptr .global .align 1 scale_kernel_param_0",
+      ".param .u64 .ptr .global .align 1 scale_kernel_param_1",
+      ".param .f32 scale_kernel_param_2",
+      ".param .u32 scale_kernel_param_3",
+      ".param .u64 .ptr .global .align 1 scale_kernel_param_4",
+      ".param .u64 .ptr .global .align 1 scale_kernel_param_5"
+    ],
+    "metadata": {
+      "arch": "sm86",
+      "backend_name": "cuda",
+      "debug": false,
+      "default_dot_input_precision": "tf32",
+      "deprecated_fp8_dot_operand_dtypes": [],
+      "enable_fp_fusion": true,
+      "enable_reflect_ftz": true,
+      "global_scratch_align": 1,
+      "global_scratch_size": 0,
+      "instrumentation_mode": "",
+      "ir_override": null,
+      "launch_cooperative_grid": false,
+      "launch_pdl": false,
+      "max_num_imprecise_acc_default": 0,
+      "maxnreg": null,
+      "name": "scale_kernel",
+      "num_ctas": 1,
+      "num_stages": 3,
+      "num_warps": 2,
+      "profile_scratch_align": 1,
+      "profile_scratch_size": 0,
+      "ptx_options": null,
+      "ptx_version": null,
+      "sanitize_overflow": true,
+      "shared": 0,
+      "target": {
+        "backend": "cuda",
+        "arch": 86,
+        "warp_size": 32
+      },
+      "tensordesc_meta": [],
+      "tmem_size": 0,
+      "triton_version": "3.8.0",
+      "warp_size": 32
+    },
+    "grid": [
+      2
+    ],
+    "num_warps": 2,
+    "python_args": "x_ptr, y_ptr, a=2.0, n=100 (BLOCK=64 constexpr)",
+    "scalars": {
+      "a": 2.0,
+      "n": 100
+    }
+  },
+  {
+    "name": "block_sum_kernel",
+    "directory": "block_sum_kernel",
+    "triton_cache_dir": "/tmp/kd_triton_cache_e4suoxnl/7Z4KY3VMYPQGROZXX3CLHBLCLF3G2DNMKNFDZLEAURRS6RR7KCQQ",
+    "ptx_params": [
+      ".param .u64 .ptr .global .align 1 block_sum_kernel_param_0",
+      ".param .u64 .ptr .global .align 1 block_sum_kernel_param_1",
+      ".param .u32 block_sum_kernel_param_2",
+      ".param .u64 .ptr .global .align 1 block_sum_kernel_param_3",
+      ".param .u64 .ptr .global .align 1 block_sum_kernel_param_4"
+    ],
+    "metadata": {
+      "arch": "sm86",
+      "backend_name": "cuda",
+      "debug": false,
+      "default_dot_input_precision": "tf32",
+      "deprecated_fp8_dot_operand_dtypes": [],
+      "enable_fp_fusion": true,
+      "enable_reflect_ftz": true,
+      "global_scratch_align": 1,
+      "global_scratch_size": 0,
+      "instrumentation_mode": "",
+      "ir_override": null,
+      "launch_cooperative_grid": false,
+      "launch_pdl": false,
+      "max_num_imprecise_acc_default": 0,
+      "maxnreg": null,
+      "name": "block_sum_kernel",
+      "num_ctas": 1,
+      "num_stages": 3,
+      "num_warps": 4,
+      "profile_scratch_align": 1,
+      "profile_scratch_size": 0,
+      "ptx_options": null,
+      "ptx_version": null,
+      "sanitize_overflow": true,
+      "shared": 8,
+      "target": {
+        "backend": "cuda",
+        "arch": 86,
+        "warp_size": 32
+      },
+      "tensordesc_meta": [],
+      "tmem_size": 0,
+      "triton_version": "3.8.0",
+      "warp_size": 32
+    },
+    "grid": [
+      8
+    ],
+    "num_warps": 4,
+    "python_args": "x_ptr, out_ptr, n=1000 (BLOCK=128 constexpr)",
+    "scalars": {
+      "n": 1000
+    }
+  },
+  {
+    "name": "strided_axpy",
+    "directory": "strided_axpy",
+    "triton_cache_dir": "/tmp/kd_triton_cache_e4suoxnl/N2LEGTTMCD2FDZ7UBKMQVBNLDZSZ4EOJEB3DI6ZZT2IWTWF6HOPQ",
+    "ptx_params": [
+      ".param .u64 .ptr .global .align 1 strided_axpy_param_0",
+      ".param .u32 strided_axpy_param_1",
+      ".param .u64 .ptr .global .align 1 strided_axpy_param_2",
+      ".param .u64 .ptr .global .align 1 strided_axpy_param_3",
+      ".param .u32 strided_axpy_param_4",
+      ".param .f32 strided_axpy_param_5",
+      ".param .u32 strided_axpy_param_6",
+      ".param .u64 .ptr .global .align 1 strided_axpy_param_7",
+      ".param .u64 .ptr .global .align 1 strided_axpy_param_8"
+    ],
+    "metadata": {
+      "arch": "sm86",
+      "backend_name": "cuda",
+      "debug": false,
+      "default_dot_input_precision": "tf32",
+      "deprecated_fp8_dot_operand_dtypes": [],
+      "enable_fp_fusion": true,
+      "enable_reflect_ftz": true,
+      "global_scratch_align": 1,
+      "global_scratch_size": 0,
+      "instrumentation_mode": "",
+      "ir_override": null,
+      "launch_cooperative_grid": false,
+      "launch_pdl": false,
+      "max_num_imprecise_acc_default": 0,
+      "maxnreg": null,
+      "name": "strided_axpy",
+      "num_ctas": 1,
+      "num_stages": 3,
+      "num_warps": 1,
+      "profile_scratch_align": 1,
+      "profile_scratch_size": 0,
+      "ptx_options": null,
+      "ptx_version": null,
+      "sanitize_overflow": true,
+      "shared": 0,
+      "target": {
+        "backend": "cuda",
+        "arch": 86,
+        "warp_size": 32
+      },
+      "tensordesc_meta": [],
+      "tmem_size": 0,
+      "triton_version": "3.8.0",
+      "warp_size": 32
+    },
+    "grid": [
+      2
+    ],
+    "num_warps": 1,
+    "python_args": "out_ptr, stride_o=3, x_ptr, stride_x=1, y_ptr, stride_y=2, a=3.0, n=50 (BLOCK=32 constexpr)",
+    "scalars": {
+      "a": 3.0,
+      "n": 50,
+      "stride_o": 3,
+      "stride_x": 1,
+      "stride_y": 2
+    }
+  },
+  {
+    "name": "accumulate_kernel",
+    "directory": "accumulate_kernel",
+    "triton_cache_dir": "/tmp/kd_triton_cache_e4suoxnl/STGTAIKALJ2LNKDA3P7C7N4V254WFYFCKEIEF4RF3UMGXBY47XCQ",
+    "ptx_params": [
+      ".param .u64 .ptr .global .align 1 accumulate_kernel_param_0",
+      ".param .u64 .ptr .global .align 1 accumulate_kernel_param_1",
+      ".param .f32 accumulate_kernel_param_2",
+      ".param .u32 accumulate_kernel_param_3",
+      ".param .u64 .ptr .global .align 1 accumulate_kernel_param_4",
+      ".param .u64 .ptr .global .align 1 accumulate_kernel_param_5"
+    ],
+    "metadata": {
+      "arch": "sm86",
+      "backend_name": "cuda",
+      "debug": false,
+      "default_dot_input_precision": "tf32",
+      "deprecated_fp8_dot_operand_dtypes": [],
+      "enable_fp_fusion": true,
+      "enable_reflect_ftz": true,
+      "global_scratch_align": 1,
+      "global_scratch_size": 0,
+      "instrumentation_mode": "",
+      "ir_override": null,
+      "launch_cooperative_grid": false,
+      "launch_pdl": false,
+      "max_num_imprecise_acc_default": 0,
+      "maxnreg": null,
+      "name": "accumulate_kernel",
+      "num_ctas": 1,
+      "num_stages": 3,
+      "num_warps": 2,
+      "profile_scratch_align": 1,
+      "profile_scratch_size": 0,
+      "ptx_options": null,
+      "ptx_version": null,
+      "sanitize_overflow": true,
+      "shared": 0,
+      "target": {
+        "backend": "cuda",
+        "arch": 86,
+        "warp_size": 32
+      },
+      "tensordesc_meta": [],
+      "tmem_size": 0,
+      "triton_version": "3.8.0",
+      "warp_size": 32
+    },
+    "grid": [
+      2
+    ],
+    "num_warps": 2,
+    "python_args": "y_ptr (in/out), x_ptr, a=0.5, n=100 (BLOCK=64 constexpr)",
+    "scalars": {
+      "a": 0.5,
+      "n": 100
+    }
+  }
+]
