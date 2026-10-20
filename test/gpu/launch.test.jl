@@ -1,5 +1,5 @@
 # Eager launches on the loaded GPU backend, for what SDPAOps (gpu/sdpa.test.jl) cannot show: a backward
-# that is itself a launched binary and the Enzyme rule over it (`Residual`), and the binary-level launch
+# that is itself a launched binary (`Residual`; its gradient through Enzyme is in ext/enzyme), and the binary-level launch
 # features: sizing, `ka_compile`, unregistered binaries, timing (`LogitScale`). The forward path of a real
 # op is in gpu/sdpa.test.jl. Backend-neutral: the array type, the backend tag and the backend's own limits
 # come from gpu_backend.jl.
@@ -69,30 +69,7 @@ begin
         @test_throws ArgumentError prepare_launch(loose, DeviceArray(x))       # no extent
     end
 
-    # Reverse through `f` on device arrays: the forward's result and the gradients for cotangent `dz`.
-    function residual_grads(f, x, y, a, dz)
-        xd, yd = DeviceArray(x), DeviceArray(y)
-        gx, gy = zero(xd), zero(yd)
-        fwd, rev = Enzyme.autodiff_thunk(ReverseSplitWithPrimal, Const{typeof(f)}, Duplicated,
-            Duplicated{typeof(xd)}, Duplicated{typeof(yd)}, Const{Float32})
-        args = (Const(f), Duplicated(xd, gx), Duplicated(yd, gy), Const(a))
-        tape, primal, shadow = fwd(args...)
-        shadow .= DeviceArray(dz)
-        rev(args..., tape)
-        return Array(primal), Array(gx), Array(gy)
-    end
-
-    @testset "Enzyme rule" begin
-        n = 50
-        x, y, dz = randn(rng, Float32, n), randn(rng, Float32, n), randn(rng, Float32, n)
-        # Through the op call, and through a direct `forward(op, kernel, ...)`: both reach the rule.
-        for f in ((x, y, a) -> Residual()(x, y, a), (x, y, a) -> KD.forward(Residual(), ResidualKA(), x, y, a))
-            primal, gx, gy = residual_grads(f, x, y, 3.0f0, dz)
-            @test primal ≈ 3 .* x .+ y
-            @test gx ≈ 3 .* dz
-            @test gy ≈ dz
-        end
-    end
+    # The gradient of an op through Enzyme, host against device, and that the backward kernel runs: test/ext/enzyme.
 
     @testset "ka_compile + call_binary, eager" begin
         register_logit_scale!()

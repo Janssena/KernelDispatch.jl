@@ -25,10 +25,10 @@ const KD = KernelDispatch
 
 const VERBOSE = lowercase(get(ENV, "JULIA_TEST_VERBOSE", "false")) in ("true", "1", "yes")
 
-const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "binary_checks", "signature", "untraced", "triton"]
+const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "binary_checks", "signature", "triton"]
 const EXT_HOST_SECTIONS = ["custom_call", "cuda_launch", "cuda_flat"]      # ext/, no device needed
 const GPU_SECTIONS = ["conformance", "launch", "gpu_inference", "gpu_sdpa", "mismatch", "traced"]
-const EXT_GPU_SECTIONS = ["ext_cuda"]                                       # ext/, needs that backend's device
+const EXT_GPU_SECTIONS = ["ext_cuda", "reactant", "enzyme"]                                       # ext/, needs that backend's device
 const GROUPS = ["cpu", "gpu", "ext"]
 known = [GROUPS; CPU_SECTIONS; EXT_HOST_SECTIONS; GPU_SECTIONS; EXT_GPU_SECTIONS]
 unknown = setdiff(ARGS, known)
@@ -78,10 +78,6 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
             include("cpu/signature.test.jl")
         end
 
-        cpu("untraced") && @testset verbose = VERBOSE "builds triggered from a trace" begin
-            include("cpu/untraced.test.jl")
-        end
-
         cpu("triton") && @testset verbose = VERBOSE "Triton binaries (reader, ABI, real-Triton fixtures)" begin
             include("cpu/triton.test.jl")
         end
@@ -124,6 +120,19 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
 
             gpu("mismatch") && @testset verbose = VERBOSE "mismatched types: the hazard, and the guard" begin
                 include("gpu/mismatch.test.jl")
+            end
+
+            ext_gpu("reactant") && @testset verbose = VERBOSE "Reactant extension (traced, on the GPU's client)" begin
+                @testset verbose = VERBOSE "the custom-call seam" begin
+                    include("ext/reactant/custom_call.test.jl")
+                end
+                @testset verbose = VERBOSE "variants built from inside a trace" begin
+                    include("ext/reactant/lazy_build.test.jl")
+                end
+            end
+
+            ext_gpu("enzyme") && @testset verbose = VERBOSE "Enzyme: gradients through ops, host against device" begin
+                include("ext/enzyme/gradient.test.jl")
             end
 
             gpu("traced") && @testset verbose = VERBOSE "Traced (Reactant)" begin
