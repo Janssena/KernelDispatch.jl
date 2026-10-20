@@ -22,6 +22,10 @@ and how each is launched:
 |:--|:--|:--|
 | Metal | Metal.jl | `mps.metal_kernel_lib` custom call (jax-mps) |
 | CUDA | CUDA.jl driver launch | `triton_kernel_call_ffi` custom call (XLA's kernel-call handler) |
+| Float16 and BFloat16, Metal: prebuilt `.metallib` (half and bfloat), KA kernels, `SDPAOps` (FlashAttn and KA), mixed outputs, eager and traced, gradients through Enzyme | tested on Apple silicon |
+| Float16 and BFloat16, CUDA: hand-written PTX and cubin, flat KA binaries, mixed outputs, `SDPAOps`, gradients through Enzyme, eager and traced (BFloat16 needs sm_80 for the native conversions) | tested on an NVIDIA A40 (`test/ext/cuda/half_smoke.jl`) |
+| Argument-type check (signature recorded by `ka_compile`, declared for prebuilt binaries): refused eagerly and from a trace | tested on Metal and on an NVIDIA A40 |
+| Triton kernels in half precision | not tested (the fixtures are `float32`) |
 | ROCm | not implemented | not implemented |
 
 Which backend a call runs on is decided by the arrays: a `MtlArray` or a traced array under a Metal client goes to
@@ -190,7 +194,7 @@ run only when a plugin that has it is found (`JAX_MPS_PLUGIN=/path/to/libpjrt_pl
 | CUDA, eager: prebuilt cubin and PTX, KA binaries, target checks, timing | tested on an NVIDIA A40 |
 | CUDA, traced: `:explicit` binaries in every buffer order, KA binaries (flat), one and two outputs, a real op (`SDPAOps`) | tested on an NVIDIA A40 |
 | CUDA, Triton ABI (shared memory above 48 KB, trailing null pointers) | tested with the scale kernel dressed as a Triton one |
-| CUDA, kernels compiled by Triton 3.8.0 (scale, block sum with shared memory, strided axpy), eager and traced | tested on an NVIDIA A40 against Triton's own output and host formulas |
+| CUDA, kernels compiled by Triton 3.2.0 and 3.8.0 (scale, block sum with shared memory, strided axpy, accumulate), eager and traced; also Float16 and BFloat16 with 3.2.0 | tested on an NVIDIA A40 against Triton's own output and host formulas |
 | CUDA, a read-modify-write kernel on an `InOutArray` (eager) and an atomic accumulation (eager and traced) | tested on an NVIDIA A40 |
 | CUDA, an `InOutArray` in a trace (the operand is aliased to the result; the argument itself stays unchanged) | tested on an NVIDIA A40 |
 | CUDA, trifast's triangle-attention kernels (`_fwd`, `_bwd_q`, `_bwd_kv`, `_bwd_b`; `tl.dot`, 3-D grids, 29-40 arguments, up to 57 KB shared memory), cubin and PTX, eager, traced and chained | tested on an NVIDIA A40 against Triton's output and a dense float64 torch reference (float32 only) |
@@ -201,23 +205,39 @@ is found (Metal on Apple, CUDA on NVIDIA) and uses only what that backend's **ad
 provides (the device array type, the `scale` fixture, the traced client, ...). What is specific to one backend lives in
 `test/ext/<backend>/` next to its adapter: for CUDA the encoding of the XLA handler's message, the flat KA layout, the
 Triton ABI's launch parameters, real Triton kernels and trifast's triangle-attention kernels (from the committed
-fixtures in `test/fixtures/`, no Python needed); for Metal the jax-mps custom call. Run them with
-`julia --project=test test/runtests.jl ext`. For a CUDA machine you can only reach remotely there is also a staged
-script, `test/ext/cuda/smoke.jl` (stages 1-16, each printing PASS or FAIL).
+fixtures in `test/fixtures/`, no Python needed); for Metal the jax-mps custom call's buffer table. Two directories hold what every backend shares, and run on the
+loaded backend like `test/gpu/` does: `test/ext/reactant/` (the custom-call seam on the backend's own Reactant client, and
+variants built from inside a trace) and `test/ext/enzyme/` (the gradient of an op on the device against the host's, and
+which kernels the gradient launched). The tests loop over `Float32`, `Float16` and `BFloat16` wherever the backend supports
+them. Run them with `julia --project=test test/runtests.jl ext`. For a CUDA machine you can only reach remotely there
+are also staged scripts, `test/ext/cuda/smoke.jl` (stages 1-16) and `test/ext/cuda/half_smoke.jl` (Float16 and BFloat16,
+stages 1-12; `HALF_SMOKE_ONLY=10,10c` runs some), each printing PASS or FAIL.
 
 ## Limits and what is left
 
 - `ka_compile` on CUDA, and registering variants, need the GPU to be present (see [Building without a GPU](@ref)).
 - A single global device backend per session: [`current_target`](@ref) is `""` when more than one is loaded.
 - Eager launches are synchronous; there are no asynchronous launches.
-- Only Float32 (and Bool masks) have been tested, with every kind of binary. Float16 and BFloat16 are not tested yet.
-  A 2-byte scalar cannot be passed to XLA's handler, so it is refused in a CUDA trace.
+- Float32, Float16 and BFloat16 are supported. A prebuilt `bfloat` kernel on Metal needs Metal 3.1 (macOS 14); BFloat16 on CUDA
+  needs sm_80 for the native conversions. Triton kernels have been tested in Float32 only. Float64 is out of scope.
+  A 2-byte scalar cannot be passed to XLA's handler, so it is refused in a CUDA trace: pass a `Float32` scalar.
+- A launch's argument types are checked only against a known signature: one `ka_compile` recorded, or one given as
+  `signature=`. A prebuilt or Triton binary without one warns once and is not checked; the order and meaning of
+  arguments of one type, shapes and strides are never checked.
+- Variants and device queries that a trace triggers (building a missing variant, asking the device its architecture) run outside
+  the tracer ([`untraced`](@ref)): on CUDA, the first query of a fresh process runs a subprocess that crashed when
+  interpreted by Reactant.
 - `InOutArray` is not available in a Metal trace (jax-mps cannot alias a result to an operand).
 - Triton scratch memory (`global_scratch_size > 0`) and thread-block clusters are refused. Other metadata that changes a
   kernel's parameters or launch (`launch_cooperative_grid`, `launch_pdl`, tensor descriptors, `maxnreg`) is currently
-  ignored, not refused; the arguments bound are not checked against the compiled signature; only Triton 3.8.0 and
+  ignored, not refused; the arguments bound are checked against the compiled signature only if `triton_binary` is given a `signature=` (Triton's metadata has none); only Triton 3.8.0 and
   sm_86 have been tested.
 - Each traced CUDA launch makes a zero buffer per output; its cost has not been measured.
+- XLA's kernel-call handler keeps one loaded module per kernel name and dynamic shared-memory size for the life of the process, so two
+  different binaries with the same entry name and size would run the first one's code (seen with a Triton kernel compiled for
+  Float32, Float16 and BFloat16). KernelDispatch gives each distinct image under one name and size its own key by asking for 4 more
+  bytes of dynamic shared memory per extra image (the first is unchanged; the kernel never uses them). Which image runs does not
+  depend on the order they are traced in, but a process's second binary of a name does launch with a slightly larger shared allocation.
 - ROCm needs an extension of its own and, most likely, its own traced story (see the checklist on the
   [backend interface](backend.md#Adding-a-backend)).
 - Reactant's own source-tracing route for KA (`enzymexla_compile_gpu`) is not used: it compiles from Julia source

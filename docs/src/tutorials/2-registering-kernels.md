@@ -104,9 +104,12 @@ Eager CUDA launches synchronize before returning.
 
 #### Both
 
-Nothing checks the argument list of `call_binary` against the actual binary. A wrong order or a wrong 
-scalar type (`Int64` for an `int`) binds without error and computes garbage. Pin it with `record_bindings`
-(see below).
+A binary carries a **`signature`**: the types it was compiled for (see below). A launch whose argument types differ
+(a `Float16` array for a `float*`, an `Int64` for an `Int32`) is refused, naming the argument. [`ka_compile`](@ref) records
+the signature itself; for a prebuilt binary pass `signature=(Vector{Float32}, Float32, Int32)` to `KernelBinary`: one type
+per argument `call_binary` binds, in that order, `Val`s left out. Without one the first launch warns once and suggests the
+`signature=` that fits it. What each entry is, the order, the three states of `signature`, the messages and what is **not**
+checked (the *order* of same-typed arguments, for one) are on the [Signatures](../signatures.md) page.
 
 ### The kernel type and its methods
 
@@ -170,6 +173,10 @@ KernelBinary("sdpa.ptx"; entry="sdpa_fwd", threadgroup=64)                      
   format (a `.metallib` on CUDA) is refused with a message.
 - `tile` is how many items one threadgroup covers along each axis. The default, `(threadgroup, 1, 1)`,
   is one item per thread, as this kernel does, so it can be left out.
+- `signature` is the types of the arguments the kernel takes, as you pass them: `signature=(Vector{Float32},
+  Vector{Float32}, Vector{Float32}, Vector{Float32}, Int32, Int32, Int32, Int32, Float32)`. A launch with other types
+  throws. It is optional: unknown means unchecked, with one warning that shows the signature to write. Use the Julia type
+  you pass (`Int32` for a Metal `constant uint&`), not the one in the kernel's source.
 - `params` holds any tuning numbers `extras` read, and is saved with the binary.
 
 ### How many threadgroups
@@ -354,12 +361,14 @@ to build for one explicitly. The kernel and its `argtypes` are the same for both
   not for an array, so `Vector{Float32}`, `MtlVector{Float32}`, `CuVector{Float32}` or any other `AbstractArray{Float32}`
   give the same binary. Whatever device array the call passes (an `MtlArray`, a `CuArray`, a traced array) is
   bound as that pointer.
-- `tg` is the workgroup size the binary is compiled for. `name` is the binary's file name and entry
-  point. A file already built under that name is reused, so put a source hash in it.
+- `tg` is the workgroup size the binary is compiled for. `name` is the start of the binary's file name and entry
+  point; `ka_compile` appends the signature of `argtypes` (`_f32x4_i32sx4_f32s_v64` here: four `Float32` buffers, four
+  `Int32` scalars, a `Float32` scalar, a `Val{64}`), so the same kernel built for `Float16` buffers is another file. A
+  file already built under that name is reused, so put a source hash in `name`.
 - The result is a `KernelBinary` with **`abi = :ka`**. That tells `call_binary` to pass what every
   KA-compiled binary takes ahead of its arguments, in the form the backend gives it (on Metal the backend's
   state word and KA's launch context; on CUDA KA's context as six integers and no state), and to
-  dispatch the grid flat. A KA kernel compiled by other means would bind wrongly without error, so
+  dispatch the grid flat. A KA kernel compiled by other means would bind wrongly, so
   compile KA kernels with `ka_compile`.
 - Its `tile` is `(tg, 1, 1)`, one item per thread, as `sdpa_ka!` indexes (`i` from the group and
   lane). A kernel whose threads each cover several items passes `tile=` to `ka_compile`.
@@ -412,7 +421,7 @@ Its manifest records `abi = "ka"`, the target, the tile and the tuning numbers. 
 
 ```toml
     [[variant.binary]]
-    entry = "sdpa_fwd_37wlduvo9jvu0"
+    entry = "sdpa_fwd_37wlduvo9jvu0_f32x4_i32sx4_f32s_v64"
     name = "fwd"
     tile = [64, 1, 1]
     threadgroup = 64
@@ -428,7 +437,7 @@ and on CUDA, a cubin for the device's architecture, with the layout it was built
 
 ```toml
     [[variant.binary]]
-    entry = "sdpa_fwd_37wlduvo9jvu0"
+    entry = "sdpa_fwd_37wlduvo9jvu0_f32x4_i32sx4_f32s_v64"
     name = "fwd"
     tile = [64, 1, 1]
     threadgroup = 64
