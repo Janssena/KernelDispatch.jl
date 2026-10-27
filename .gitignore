@@ -1,0 +1,10 @@
+.DS_Store
+*.log
+docs/build/
+*/Manifest.toml
+Manifest.toml
+# recorded Triton / trifast outputs: generated locally, published as an artifact (test/Artifacts.toml)
+test/fixtures/triton/
+test/fixtures/trifast/
+docs/*.md
+*.tar.gz
