@@ -34,6 +34,17 @@ else
             @test Array(gy) ≈ dz
         end
 
+        @testset "an operand XLA computes arrives in the default layout" begin
+            # A transpose feeding the call: without declared `operand_layouts` XLA's GPU compiler may turn it into a layout
+            # change, and the kernel reads the untransposed buffer (silently wrong values).
+            M, y = randn(rng, Float32, 8, 16), randn(rng, Float32, 16, 8)
+            fwd(M, y) = KernelDispatch.forward(Residual(), ResidualKA(), permutedims(M), y, 3.0f0)
+            Mr, yr = Reactant.to_rarray(M), Reactant.to_rarray(y)
+            @test Array(@jit fwd(Mr, yr)) ≈ vec(3.0f0 .* permutedims(M) .+ y)
+            ir = repr(Reactant.@code_hlo optimize = false fwd(Mr, yr))
+            @test occursin("operand_layouts", ir) && occursin("result_layouts", ir)
+        end
+
         @testset "traced autodiff refuses" begin
             x = Reactant.to_rarray(randn(rng, Float32, 16))
             h(x) = Enzyme.gradient(Enzyme.Reverse, x -> sum(Residual()(x, x, 1.0f0)), x)
