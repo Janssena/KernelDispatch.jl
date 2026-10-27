@@ -125,6 +125,15 @@ What follows from the handler:
   stays functional. Not available on Metal under a trace.
 - **Autodiff** through a traced custom call is not supported (Enzyme cannot differentiate one yet); an op's
   `backward` can be called explicitly.
+- **Layouts are declared.** Every operand and result of the call is declared dense with the last dimension fastest
+  (`operand_layouts` / `result_layouts`; Reactant reverses a Julia array's dimensions, so this is Julia's column-major
+  order, the one kernels read). Without the declaration XLA's GPU compiler may hand the kernel an operand it computed
+  itself in another physical layout: a `permutedims` feeding the call can become a relabelling instead of a copy, and the
+  kernel then reads the buffer in the wrong order, silently (measured on an NVIDIA A40, where the transposed bias of an
+  attention kernel gave a relative error of about 0.8 while operands that were plain parameters were fine). With the
+  declaration XLA has to produce the operand in memory in that order, so a transpose in an op's `forward` is a real
+  copy and nothing needs to be passed by the user. A runtime that executes the HLO as written (jax-mps) keeps every
+  tensor in this layout already and accepts the attribute, so the results do not change there.
 
 The calling convention is `triton_kernel_call_ffi@4` (jax-triton's typed-FFI form, the payload in an `opaque`
 attribute). Reactant's compile pipeline rewrites a custom call named exactly `triton_kernel_call` into Triton IR,

@@ -40,6 +40,11 @@ between scalars); without the aliasing an output-first kernel is bound wrongly a
 [`InOutArray`](@ref): its operand is bound in the kernel's position with the result aliased to it. Metal has no such limit and
 refuses an `InOutArray` in a trace.
 
+**Traced launches declare their layouts.** The custom call gives every operand and result the default dense layout
+(`operand_layouts` / `result_layouts`, last dimension fastest, i.e. Julia's column-major order). A backend's `custom_call`
+inherits it from `_embed_custom_call`; it has nothing to pass. It matters wherever the XLA compiler is free to choose the
+layout of an operand it computes (its GPU compiler is): see [Traced launches](backends.md#Traced-launches).
+
 A backend is complete when it passes `test/gpu/conformance.test.jl`, which runs the same checks against any loaded
 backend using an `:explicit`-ABI kernel.
 

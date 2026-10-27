@@ -18,6 +18,13 @@ function _aliases_attr(aliases, nresults::Integer)
     return Reactant.MLIR.IR.Attribute(attrs)
 end
 
+# The layout every operand and result of a kernel call is declared to have. Reactant reverses a 
+# Julia array's dimensions, so this is Julia's column-major memory order, which is what a kernel 
+# is written against. Without `operand_layouts` XLA is free to pick the layout of an operand that 
+# it computes itself, and its GPU compiler does.
+_default_layout(rank::Integer) = Reactant.MLIR.IR.DenseIndexElementsAttribute(collect(Int64, (rank-1):-1:0))
+_layouts_attr(ranks) = Reactant.MLIR.IR.Attribute([_default_layout(r) for r in ranks])
+
 """
     _embed_custom_call(call_target_name, operands, result_shapes; backend_config, result_eltypes,
         api_version=1, reverse=nothing, active_operands=nothing, label=call_target_name) -> results
@@ -37,6 +44,9 @@ a kernel storing `Float16` into a result declared `Float32` fills half the bytes
 with no error. (`execute` passes the element type of each `OutArray`.)
 
 `output_operand_aliases` is a list of `(result, operand)` pairs (0-based) whose buffers are shared.
+
+Every operand and result is declared to have the default dense layout (`operand_layouts` / `result_layouts`, see
+`_default_layout`), so a kernel reads Julia's column-major memory order whatever XLA does to the operands before the call.
 
 `reverse`, given, is a VJP attached via [`_attach_reverse_rule!`](@ref) — see its docstring for the
 calling convention. `label` only affects the generated reverse function's (gensym'd) name, for
@@ -64,7 +74,9 @@ function _embed_custom_call(call_target_name::AbstractString, operands, result_s
         call_target_name=Reactant.MLIR.IR.Attribute(call_target_name),
         backend_config=_config_attr(backend_config),
         api_version=Reactant.MLIR.IR.Attribute(Int32(api_version)),
-        output_operand_aliases=_aliases_attr(output_operand_aliases, length(result_shapes))
+        output_operand_aliases=_aliases_attr(output_operand_aliases, length(result_shapes)),
+        operand_layouts=_layouts_attr(ndims.(operands)),
+        result_layouts=_layouts_attr(length.(result_shapes))
     )
     
     results = ntuple(length(result_shapes)) do i
