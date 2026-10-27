@@ -1,6 +1,6 @@
 name = "KernelDispatch"
 uuid = "8d34074f-262e-46e2-9f95-b1abcc740b38"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Janssena <alexanderjanssen@live.com>"]
 
 [deps]
