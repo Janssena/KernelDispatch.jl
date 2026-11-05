@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.2.2 - 2026-11-05
+
+### Added
+
+- **Device utilities, `public`:** `to_device(backend, x)` (any `AbstractArray` to a device array), `device_caps(backend)`
+  with its `DeviceCaps(warp, max_threads, max_shmem, name)` (the device's limits; `DeviceCaps.max_threads` is the device
+  ceiling, `max_threads(binary)` a compiled binary's own), and `release!(backend, x)` (free a device array now; a no-op
+  where the backend has nothing to free). Moved here from LuxTriangleAttention, where they were methods on these same
+  backend tags. Without an extension behind the tag `to_device` and `device_caps` throw `ArgumentError`. On CUDA
+  `DeviceCaps.max_shmem` is the static shared memory a block may use (48 KiB, which is what KernelAbstractions'
+  `@localmem` can get), not the device's opt-in maximum, and `name` includes the compute capability (`"... sm_86"`).
+  Documented under "Device utilities" in the API reference and in the backend page's table. Tests:
+  `test/cpu/device_utils.test.jl`, `test/gpu/device_utils.test.jl`, `test/ext/cuda/device_caps.test.jl`.
+- **Opt-in asynchronous eager launches.** With `KERNELDISPATCH_ASYNC_LAUNCHES=1` in the environment (read when the package
+  loads), or `KernelDispatch.ASYNC_LAUNCHES[] = true`, `encode_launch` (and so `call_binary`, `run_binary` and `execute`)
+  returns once the dispatch is enqueued instead of waiting for the device. **Off by default: launches still wait, as before.**
+  - Metal: the dispatch is encoded into a command buffer derived from Metal.jl's task-local queue (`Metal.global_queue`)
+    and committed. Committing flushes Metal.jl's open batch first, so the kernel is ordered after everything the task
+    enqueued before it. 1000 launches of a small kernel took 225 ms waiting and 26 ms asynchronous on an M1 Pro.
+  - CUDA: the per-launch `CUDACore.synchronize()` is skipped; the launch is ordered on the task's stream. Tested on an
+    NVIDIA A40 (sm_86).
+  - Ordering is task-local, as in Metal.jl and CUDA.jl: work launched on one task and consumed on another needs a
+    `Metal.synchronize()` / `CUDA.synchronize()` first (on Metal a reader that skips it mostly sees stale data). A device-side
+    error surfaces at the next synchronization point, not at the launch.
+  - `device_time`, `time_binary` and `max_threads` always wait. Traced launches are unchanged.
+- `test/gpu/async_launch.test.jl` (section `async`): launches interleaved with the backend's own work, no
+  synchronization in between; an input freed straight after the launch that reads it; a temporary collected by the GC.
+  `test/probes/async_hazards.jl` measures the cross-task read race (not part of the suite).
+
+### Changed
+
+- The default eager Metal launch is encoded on Metal.jl's queue instead of a queue of KernelDispatch's own, and still
+  waits. Results are unchanged.
+
+### Fixed
+
+- **Enzyme: gradients for ops whose arguments or results are `NamedTuple`s or `Tuple`s.** An op that takes a layer's
+  parameters as a `NamedTuple` failed in the reverse rule, which added the gradient with `a.dval .+= g`, and an op that
+  returns a layer's updated state had no shadow of the right type. The gradient is now accumulated field by field
+  (arrays in place, a `nothing` gradient skipped, `g` may name fewer fields than the shadow), and the shadow of a returned
+  `NamedTuple` / `Tuple` is built field by field: arrays zeroed, anything else (an `Int`, a `Symbol`) kept as is.
+
+
 ## 0.2.1 - 2026-10-27
 
 ### Fixed
