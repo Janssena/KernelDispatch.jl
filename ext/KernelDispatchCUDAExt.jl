@@ -276,6 +276,25 @@ KD.device_dense(::KD.CUDABackendTag, x::WrappedCuArray) = CuArray(x)
 
 KD.ka_backend_object(::KD.CUDABackendTag) = CUDABackend()
 
+KD.to_device(::KD.CUDABackendTag, x::AbstractArray) = CuArray(x)
+
+KD.release!(::KD.CUDABackendTag, x::CuArray) = CUDACore.unsafe_free!(x)
+
+# `max_shmem` is the STATIC shared memory a block may use: KernelAbstractions' `@localmem` is static, and CUDA
+# caps that at 48 KiB per block whatever the device's opt-in maximum is (dynamic shared memory is out of scope).
+# The name carries the compute capability: it keys persisted calibrations, and two cards of one family
+# with different capabilities tune differently.
+const STATIC_SHARED_BYTES = 48 * 1024
+
+function KD.device_caps(::KD.CUDABackendTag)
+    dev = CUDACore.device()
+    cap = CUDACore.capability(dev)
+    return KD.DeviceCaps(32,
+        Int(CUDACore.attribute(dev, CUDACore.DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)),
+        STATIC_SHARED_BYTES,
+        "$(CUDACore.name(dev)) sm_$(cap.major)$(cap.minor)")
+end
+
 # The device's compute capability as a binary's `target` spells it: "sm_86".
 function KD.target_id(::KD.CUDABackendTag)
     cap = CUDACore.capability(CUDACore.device())

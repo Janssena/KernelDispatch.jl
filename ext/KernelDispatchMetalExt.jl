@@ -210,6 +210,14 @@ KD.device_dense(::KD.MetalBackendTag, x::WrappedMtlArray) = copy(x)
 
 KD.ka_backend_object(::KD.MetalBackendTag) = MetalBackend()
 
+KD.to_device(::KD.MetalBackendTag, x::AbstractArray) = MtlArray(x)
+
+KD.release!(::KD.MetalBackendTag, x::MtlArray) = Metal.unsafe_free!(x)
+
+KD.device_caps(::KD.MetalBackendTag) = KD.DeviceCaps(32,
+    Int(Metal.device().maxThreadsPerThreadgroup.width),
+    Int(Metal.device().maxThreadgroupMemoryLength), String(Metal.device().name))
+
 # Metal.jl's KA kernels take a kernel-state word (a `UInt32`) ahead of KA's context.
 KD.ka_state_words(::KD.MetalBackendTag) = (UInt32(0),)
 

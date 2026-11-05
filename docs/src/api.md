@@ -107,6 +107,19 @@ cache_root
 realtype
 ```
 
+### Device utilities
+
+Small backend-generic tools for code that builds problems on the host, sizes tiles to the device and manages its own
+workspaces (a tuner, a kernel that owns scratch buffers): each dispatches on a backend tag and has a backend extension
+behind it.
+
+```@docs
+to_device
+device_caps
+DeviceCaps
+release!
+```
+
 ## Autodiff and tracing
 
 ```@docs

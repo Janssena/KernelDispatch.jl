@@ -30,7 +30,8 @@ public opname, default_kernel, @default_kernel, default_candidates, kernelname, 
     variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, execute,
     Launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,
     GPUBackend, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, untraced, cache_root, ka_binary_cache_dir,
-    current_target, device_available, device_zeros, max_threads, device_backend, ASYNC_LAUNCHES
+    current_target, device_available, device_zeros, max_threads, device_backend,
+    to_device, release!, DeviceCaps, device_caps, ASYNC_LAUNCHES
 
 """
     device_zeros(proto, T, dims...) -> array

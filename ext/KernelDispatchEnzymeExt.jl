@@ -19,7 +19,13 @@ const KD = KernelDispatch
 EnzymeRules.inactive(::typeof(KD.selected_kernel), args...) = nothing
 
 _shadow(x::AbstractArray) = zero(x)
+# A returned `NamedTuple` or `Tuple` (a layer's updated state) needs a shadow of its own type, so it is built field by
+# field: arrays zeroed, anything else (an `Int`, a `Symbol`) kept as it is, since Enzyme does not differentiate it.
+_shadow(x::Union{NamedTuple,Tuple}) = map(_shadow_field, x)
 _shadow(x) = nothing
+_shadow_field(x::AbstractArray) = zero(x)
+_shadow_field(x::Union{NamedTuple,Tuple}) = map(_shadow_field, x)
+_shadow_field(x) = x
 _shadows(out::Tuple) = map(_shadow, out)
 _shadows(out) = _shadow(out)
 
@@ -34,6 +40,14 @@ function EnzymeRules.augmented_primal(config::EnzymeRules.RevConfig,
     return EnzymeRules.augmented_rule_return_type(config, RT)(primal, shadow, (vals, out, shadow))
 end
 
+# Add a gradient `g` into a shadow `d` of the same structure: an array in place, a `NamedTuple` or `Tuple` (an op whose
+# argument is a layer's parameters) field by field, and a `nothing` gradient (none for that field) is skipped. `g` may
+# name fewer fields than `d`.
+_accumulate!(d::AbstractArray, g::AbstractArray) = (d .+= g; nothing)
+_accumulate!(d::NamedTuple, g::NamedTuple) = (foreach(k -> _accumulate!(d[k], g[k]), keys(g)); nothing)
+_accumulate!(d::Tuple, g::Tuple) = (foreach(_accumulate!, d, g); nothing)
+_accumulate!(d, ::Nothing) = nothing
+
 # Gradients ACCUMULATE into the shadows (one argument can be reached by several paths). A
 # `Duplicated` argument's gradient goes into its shadow (`nothing` returned); an `Active` one is a
 # scalar parameter, which is not differentiated through a kernel (zero).
@@ -46,7 +60,7 @@ function EnzymeRules.reverse(config::EnzymeRules.RevConfig,
     isnothing(cots) && error("no cotangent available for op `:$(KD.opname(op.val))`")
     grads = KD.backward(op.val, k.val, vals, out, cots)
     for (a, g) in zip(args, grads)
-        (a isa Enzyme.Duplicated && !isnothing(g)) && (a.dval .+= g)
+        (a isa Enzyme.Duplicated && !isnothing(g)) && _accumulate!(a.dval, g)
     end
     return (nothing, nothing, map(a -> a isa Enzyme.Active ? zero(a.val) : nothing, args)...)
 end

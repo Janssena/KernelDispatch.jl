@@ -49,6 +49,59 @@ extension whose launcher needs plain arrays copies a wrapper here, once, on the 
 device_dense(::KernelBackend, x) = x
 
 """
+    to_device(backend, x::AbstractArray) -> device array
+
+`x` copied to the backend's device, whatever wrapper it comes in. Implemented by the backend extension for its own
+tag; throws `ArgumentError` for a backend with none (a host-only setup). For building problems on the host and moving
+them over, as a tuner's probe and verification problems are.
+"""
+to_device(be::KernelBackend, x) = throw(ArgumentError(
+    "no device arrays for $(typeof(be)); load the package for that backend"))
+
+"""
+    release!(backend, x)
+
+Free the device array `x` now rather than when the GC collects it. Eagerly, a call's peak device memory is the sum of
+everything it allocates (the GC does not run inside a call), so a kernel that owns workspaces releases each after its
+last use. The default does nothing, which is correct and only costs memory; a backend extension frees.
+`KernelAbstractions.unsafe_free!` is not used: Metal.jl has no method for it, so it would silently free nothing.
+
+A view or reshape of a device array shares its buffer's reference count: the buffer is freed once every one of
+them is released (or collected). Do not use `x` afterwards.
+"""
+release!(::KernelBackend, x) = nothing
+
+"""
+    DeviceCaps
+
+What a backend reports about its device, for choosing the configurations to build. Deliberately small: anything that
+can be measured is measured rather than declared.
+
+# Fields
+- `warp`: threads per warp / wavefront / SIMD group. Group sizes are multiples of this.
+- `max_threads`: the device's ceiling on threads per group. A NECESSARY but not sufficient bound: a compiled
+  binary's own limit ([`max_threads`](@ref)`(binary)`) is lower when it uses many registers, and is what a launch is
+  checked against.
+- `max_shmem`: bytes of local memory available to one group.
+- `name`: device identifier, specific enough to key a calibration on (on CUDA it includes the compute capability).
+"""
+struct DeviceCaps
+    warp::Int
+    max_threads::Int
+    max_shmem::Int
+    name::String
+end
+
+"""
+    device_caps(backend) -> DeviceCaps
+
+The device's limits. Implemented by the backend extension for its own tag; throws `ArgumentError` for a backend
+with none.
+"""
+device_caps(be::KernelBackend) = throw(ArgumentError(
+    "no device capabilities for $(typeof(be)); load the package for that backend"))
+
+"""
     realtype(T) -> Type
 
 The element type behind a possibly-wrapped number type: e.g. Reactant's `TracedRNumber{Float32}` → 
