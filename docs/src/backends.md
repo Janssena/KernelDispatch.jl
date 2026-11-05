@@ -207,8 +207,10 @@ what the task enqueued before it (`fill!`, broadcasts, copies, GEMMs) runs first
 read on the task (`Array(y)`, `copyto!`, `Metal.synchronize()` / `CUDA.synchronize()`) sees the result. An array freed
 right after the launch that reads it (`unsafe_free!`, or the GC) stays valid until the kernel is done.
 
-- **Across tasks** there is no ordering. Work launched on one task and consumed on another needs a synchronize on the
-  launching task first.
+- **Across tasks** there is no ordering to rely on. Work launched on one task and consumed on another needs a
+  synchronize on the launching task first. On Metal a reader that skips it mostly sees stale data. CUDA.jl happens to make
+  a `CuArray` reader on another stream wait for the memory's owner (tested on an A40), but that is CUDA.jl's behavior,
+  not something KernelDispatch guarantees; synchronize for code that must run on both.
 - **Device-side errors** surface at the next synchronization point rather than at the launch. To find the launch that
   caused one, set `KERNELDISPATCH_SYNC_LAUNCHES=1` (read when the package loads) or `KernelDispatch.SYNC_LAUNCHES[] = true`:
   every launch then waits, as launches did before they were asynchronous.

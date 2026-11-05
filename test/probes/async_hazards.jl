@@ -5,8 +5,9 @@
 #
 # 1. CROSS-TASK READ WITHOUT SYNCHRONIZE. One task launches a long chain; another reads at once. Ordering is per task, so the
 #    reader may see the array before the chain finished. Prints how many of the trials read a stale (incomplete) result.
-#    Expected on Metal: most. On CUDA: usually none (CUDA.jl makes a reader on another stream wait for the memory's
-#    owner), which is also worth knowing. The same trials with `SYNC_LAUNCHES` set should read 0 stale.
+#    Measured: Metal (M1 Pro) reads stale in most trials (29 of 30). CUDA (A40) reads 0 stale, with or without
+#    `SYNC_LAUNCHES`: CUDA.jl makes a reader on another stream wait for the memory's owner. With `SYNC_LAUNCHES` set
+#    Metal also reads 0 stale.
 # 2. WALL-CLOCK TIMING OF AN EAGER LAUNCH. `@elapsed` around launches without a synchronize now measures enqueueing only.
 # 3. A LATE ERROR. A launch that fails device-side does not throw at the launch (not probed: it needs a faulting kernel).
 
