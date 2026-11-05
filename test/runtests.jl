@@ -27,7 +27,7 @@ const VERBOSE = lowercase(get(ENV, "JULIA_TEST_VERBOSE", "false")) in ("true", "
 
 const CPU_SECTIONS = ["kernels", "inference", "preferences", "device_utils", "sdpa", "binary_checks", "signature", "triton"]
 const EXT_HOST_SECTIONS = ["custom_call", "cuda_launch", "cuda_flat"]      # ext/, no device needed
-const GPU_SECTIONS = ["conformance", "launch", "gpu_inference", "gpu_sdpa", "gpu_device_utils", "mismatch", "traced"]
+const GPU_SECTIONS = ["conformance", "launch", "async", "gpu_inference", "gpu_sdpa", "gpu_device_utils", "mismatch", "traced"]
 const EXT_GPU_SECTIONS = ["ext_cuda", "reactant", "enzyme"]                                       # ext/, needs that backend's device
 const GROUPS = ["cpu", "gpu", "ext"]
 known = [GROUPS; CPU_SECTIONS; EXT_HOST_SECTIONS; GPU_SECTIONS; EXT_GPU_SECTIONS]
@@ -112,6 +112,10 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
 
             gpu("launch") && @testset verbose = VERBOSE "eager launches" begin
                 include("gpu/launch.test.jl")
+            end
+
+            gpu("async") && @testset verbose = VERBOSE "asynchronous launches: ordering and lifetime" begin
+                include("gpu/async_launch.test.jl")
             end
 
             gpu("gpu_inference") && @testset verbose = VERBOSE "type stability on the device" begin
