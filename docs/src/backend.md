@@ -22,6 +22,7 @@ backend decides what it can launch from those.
 |:--|:--|:--|:--|:--|
 | `backend_of(::MyArray)` | the tag of an array | `CPUBackend` | `MtlArray` | `CuArray` |
 | `device_dense` | densify a wrapper (view, adjoint) | identity | copy | `CuArray(x)` |
+| `to_device`, `release!`, `device_caps` | host array to device, free a device array now, the device's limits | error, no-op, error | `MtlArray(x)`, `unsafe_free!`, device limits | `CuArray(x)`, `unsafe_free!`, device limits (static shared memory) |
 | `execute(::MyArray, ::Launch)` | run a prepared launch | error | yes | yes |
 | `encode_launch`, `device_time`, `max_threads` | the launch, its timing, its thread limit | error | yes | yes |
 | `supported_formats` | formats it launches | `()` (unchecked) | `.metallib` | `.cubin`, `.ptx` |
