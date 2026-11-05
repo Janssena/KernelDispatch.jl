@@ -23,8 +23,6 @@ variants** picked from the inputs. Binaries come from files (`.metallib`, `.cubi
 [KernelAbstractions](https://github.com/JuliaGPU/KernelAbstractions.jl) kernels (`ka_compile`) or from Triton
 (`triton_binary`), and are launched the same way.
 
-**Documentation:** <https://janssena.github.io/KernelDispatch.jl/dev/>
-
 ## Example
 
 Register one kernel for a scaled dot-product attention op (`q: d×n`, `k: d×m`, `v: dv×m` → `o: dv×n`).
