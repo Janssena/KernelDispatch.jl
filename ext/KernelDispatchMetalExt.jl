@@ -65,15 +65,11 @@ function _set_slots!(enc, args)
 end
 
 # Encode `reps` repetitions of a sequence of dispatches — `(binary, slots, grid)` triples, in order —
-# into one command buffer, commit and wait for it.
-function _run(items, reps::Int)
+# into the command buffer `cb`, which is left uncommitted.
+function _encode!(cb, items, reps::Int)
     for (b, _, _) in items
         _check_limit(b.file, b.entry, b.threadgroup)
     end
-    # Metal.jl batches its own commands (fills, copies, argument-buffer uploads) on ITS queue; this
-    # launch commits to another. Without draining Metal.jl first the kernel can run before they land.
-    Metal.synchronize()
-    cb = Metal.MTLCommandBuffer(queue())
     enc = Metal.MTLComputeCommandEncoder(cb)
     one = length(items) == 1
 
@@ -91,19 +87,43 @@ function _run(items, reps::Int)
         Metal.dispatchThreadgroups!(enc, Metal.MTLSize(grid...), Metal.MTLSize(Int(b.threadgroup), 1, 1))
     end
     Metal.endEncoding!(enc)
-    Metal.commit!(cb)
-    Metal.wait_completed(cb)
-    
+
     return cb
 end
 
-KD.encode_launch(::KD.MetalBackendTag, b::KD.KernelBinary, slots, grid::NTuple{3,Int}) =
-    (_run([(b, slots, grid)], 1); nothing)
+# An eager launch: encoded into a command buffer derived from Metal.jl's own (task-local) queue, committed, not waited
+# for. Committing a derived buffer first flushes the open batch Metal.jl has encoded on this task (fills, copies, MPS,
+# argument-buffer uploads), so the kernel runs after everything the task enqueued before it and before everything it
+# enqueues after. The command buffer retains the resources set on its encoder, so an array freed right after the
+# launch lives until the kernel is done.
+function _run_async(items)
+    cb = Metal.MTLCommandBuffer(Metal.global_queue(Metal.device()))
+    _encode!(cb, items, 1)
+    Metal.commit!(cb)
+    return cb
+end
+
+function KD.encode_launch(::KD.MetalBackendTag, b::KD.KernelBinary, slots, grid::NTuple{3,Int})
+    cb = _run_async([(b, slots, grid)])
+    KD.SYNC_LAUNCHES[] && Metal.wait_completed(cb)
+    return nothing
+end
+
+# Timing needs the GPU timestamps, so it waits, on KernelDispatch's own queue. Metal.jl batches its commands on ITS
+# queue; without draining it first, work still in flight there would overlap the timed window.
+function _run_timed(items, reps::Int)
+    Metal.synchronize()
+    cb = _encode!(Metal.MTLCommandBuffer(queue()), items, reps)
+    Metal.commit!(cb)
+    Metal.wait_completed(cb)
+
+    return cb
+end
 
 # The repetitions share one command buffer: its GPU timestamps exclude all host latency.
 function KD.device_time(::KD.MetalBackendTag, items::AbstractVector; reps::Int)
     reps >= 1 || throw(ArgumentError("`reps` must be at least 1, got $reps"))
-    cb = _run(items, reps)
+    cb = _run_timed(items, reps)
     return (cb.GPUEndTime - cb.GPUStartTime) / reps
 end
 
@@ -113,6 +133,11 @@ end
 Allocate every `OutArray` of the launch's arguments (an `InOutArray` is bound as its array), bind `(prelude..., args..., extras...)` in order
 (a `Val` takes no slot), dispatch, and return the allocated outputs. Dispatches on `MtlArray`, so it
 coexists with the other backends' methods (CUDA's on `CuArray`, Reactant's on traced arrays).
+
+The dispatch is asynchronous (see [`encode_launch`](@ref)): `execute` returns once it is enqueued, ordered with
+Metal.jl's work on the calling task. Reading a result on the same task (`Array(y)`, `Metal.synchronize()`) waits for it;
+another task must synchronize the launching task first. Set `KernelDispatch.SYNC_LAUNCHES[] = true` (or
+`KERNELDISPATCH_SYNC_LAUNCHES=1`) to wait after every launch.
 """
 function KD.execute(proto::MtlArray, l::KD.Launch)
     bound, slots = KD.bind_slots(proto, l.prelude, l.args, l.extras)
