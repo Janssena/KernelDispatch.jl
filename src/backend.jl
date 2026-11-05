@@ -145,15 +145,17 @@ ka_backend_object(be::KernelBackend) = throw(ArgumentError(
     "no KernelAbstractions backend for $(typeof(be)); load the package for that backend"))
 
 """
-    SYNC_LAUNCHES
+    ASYNC_LAUNCHES
 
-`Ref{Bool}`, default `false`. When `true`, every eager launch ([`encode_launch`](@ref)) waits for the device to finish
-before returning, as launches did before they were asynchronous. A debugging switch: a device-side error then surfaces at
-the launch that caused it, not at the next synchronization point. Initialised from the environment variable
-`KERNELDISPATCH_SYNC_LAUNCHES` (`1`, `true` or `yes`) when the package loads; assign to it to change it at runtime.
-Timing ([`device_time`](@ref), [`time_binary`](@ref)) always waits, whatever this says.
+`Ref{Bool}`, default `false`: an eager launch ([`encode_launch`](@ref)) waits for the device to finish before it returns, so
+its result is correct whichever task reads it and a device-side error surfaces at the launch that caused it. Set it to
+`true` to opt in to **asynchronous launches**, which return once the dispatch is enqueued and remove the host round trip
+(about ten times less time per launch for a small kernel on Metal); read [`encode_launch`](@ref) for what that asks of the
+caller first. Initialised from the environment variable `KERNELDISPATCH_ASYNC_LAUNCHES` (`1`, `true` or `yes`) when
+the package loads; assign to it to change it at runtime. Timing ([`device_time`](@ref), [`time_binary`](@ref)) always
+waits, whatever this says.
 """
-const SYNC_LAUNCHES = Ref(false)
+const ASYNC_LAUNCHES = Ref(false)
 
 _env_flag(name) = lowercase(get(ENV, name, "")) in ("1", "true", "yes")
 
@@ -165,16 +167,17 @@ The lowest layer: bind `slots` (device arrays and bits scalars, in slot order, p
 [`max_threads`](@ref). Implemented by the backend extension; callers want [`run_binary`](@ref), which builds the slots
 and grid.
 
-**The launch is asynchronous**: it returns once the dispatch is enqueued, not when the device has finished. It is
-ordered like the backend's own work (Metal.jl's and CUDA.jl's kernels, copies, `fill!`, GEMMs) *on the calling task*:
-whatever that task enqueued earlier runs first, whatever it enqueues later runs after, and a host read on the task
-(`Array(x)`, `copyto!`, `Metal.synchronize()` / `CUDA.synchronize()`) sees the kernel's writes. An array freed right
+By default the launch **waits for completion**. With [`ASYNC_LAUNCHES`](@ref) set (or the environment variable
+`KERNELDISPATCH_ASYNC_LAUNCHES=1`) it is **asynchronous**: it returns once the dispatch is enqueued, not when the device has
+finished. It is then ordered like the backend's own work (Metal.jl's and CUDA.jl's kernels, copies, `fill!`, GEMMs) *on the
+calling task*: whatever that task enqueued earlier runs first, whatever it enqueues later runs after, and a host read on the
+task (`Array(x)`, `copyto!`, `Metal.synchronize()` / `CUDA.synchronize()`) sees the kernel's writes. An array freed right
 after the launch (`unsafe_free!`, or by the GC) stays valid until the kernel is done.
 
-What does not hold: ordering **across tasks**. Work launched on one task and consumed on another needs a
-synchronize on the launching task first. A device-side error surfaces at the next synchronization point, not at the
-launch; set [`SYNC_LAUNCHES`](@ref) (or the environment variable `KERNELDISPATCH_SYNC_LAUNCHES=1`) to wait after every
-launch while debugging. [`device_time`](@ref) and [`time_binary`](@ref) still wait.
+What an asynchronous launch does not give: ordering **across tasks**. Work launched on one task and consumed on another needs
+a synchronize on the launching task first, or the reader may see stale data (on Metal it usually does). A device-side error
+surfaces at the next synchronization point, not at the launch; turn [`ASYNC_LAUNCHES`](@ref) off to find the launch
+that caused it. [`device_time`](@ref) and [`time_binary`](@ref) wait either way.
 """
 function encode_launch end
 

@@ -30,7 +30,7 @@ public opname, default_kernel, @default_kernel, default_candidates, kernelname, 
     variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, execute,
     Launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,
     GPUBackend, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, untraced, cache_root, ka_binary_cache_dir,
-    current_target, device_available, device_zeros, max_threads, device_backend, SYNC_LAUNCHES
+    current_target, device_available, device_zeros, max_threads, device_backend, ASYNC_LAUNCHES
 
 """
     device_zeros(proto, T, dims...) -> array
@@ -42,7 +42,7 @@ device_zeros(proto, ::Type{T}, dims::Integer...) where {T} =
     fill!(similar(proto, T, Int.(dims)), zero(T))
 
 function __init__()
-    SYNC_LAUNCHES[] = _env_flag("KERNELDISPATCH_SYNC_LAUNCHES")
+    ASYNC_LAUNCHES[] = _env_flag("KERNELDISPATCH_ASYNC_LAUNCHES")
     return nothing
 end
 

@@ -100,8 +100,8 @@ What KernelDispatch does with a binary like this:
 - Arrays follow Julia conventions: column-major, as on Metal.
 - Dynamic shared memory is a property of the binary (`KernelBinary`'s `shared_mem`), not of the call.
 
-Eager CUDA launches are asynchronous: they return once enqueued on the task's stream, ordered with CUDA.jl's work there
-(see [Asynchronous launches](@ref)).
+Eager CUDA launches wait for the device by default; they can be made asynchronous, ordered on the task's stream with CUDA.jl's
+work (see [Asynchronous launches](@ref)).
 
 #### Both
 
@@ -487,8 +487,8 @@ o, = run_binary(cand, OutArray(Float32, dv, n), q, k, v, d, n, m, dv, scale; ext
 prepared launch can be both checked (`KernelDispatch.execute(l)`) and timed (`time_binary(l)`).
 
 `time_binary` reports device time: `reps` dispatches back to back (in one command buffer on Metal, between two events on
-the stream on CUDA), timed by the device's own timestamps, so the host's launch latency is excluded. Timing waits for the device, although
-ordinary eager launches do not. A vector of launches is timed as a
+the stream on CUDA), timed by the device's own timestamps, so the host's launch latency is excluded. Timing waits for the device, whether or not
+ordinary eager launches do. A vector of launches is timed as a
 sequence, every repetition dispatching all of them in order. Together with `record_bindings`, whose
 records carry each `Launch`, that times everything one op call launches:
 

@@ -91,8 +91,8 @@ function _encode!(cb, items, reps::Int)
     return cb
 end
 
-# An eager launch: encoded into a command buffer derived from Metal.jl's own (task-local) queue, committed, not waited
-# for. Committing a derived buffer first flushes the open batch Metal.jl has encoded on this task (fills, copies, MPS,
+# An eager launch: encoded into a command buffer derived from Metal.jl's own (task-local) queue and committed; waited for
+# unless `ASYNC_LAUNCHES` is set. Committing a derived buffer first flushes the open batch Metal.jl has encoded on this task (fills, copies, MPS,
 # argument-buffer uploads), so the kernel runs after everything the task enqueued before it and before everything it
 # enqueues after. The command buffer retains the resources set on its encoder, so an array freed right after the
 # launch lives until the kernel is done.
@@ -105,7 +105,7 @@ end
 
 function KD.encode_launch(::KD.MetalBackendTag, b::KD.KernelBinary, slots, grid::NTuple{3,Int})
     cb = _run_async([(b, slots, grid)])
-    KD.SYNC_LAUNCHES[] && Metal.wait_completed(cb)
+    KD.ASYNC_LAUNCHES[] || Metal.wait_completed(cb)
     return nothing
 end
 
@@ -134,10 +134,10 @@ Allocate every `OutArray` of the launch's arguments (an `InOutArray` is bound as
 (a `Val` takes no slot), dispatch, and return the allocated outputs. Dispatches on `MtlArray`, so it
 coexists with the other backends' methods (CUDA's on `CuArray`, Reactant's on traced arrays).
 
-The dispatch is asynchronous (see [`encode_launch`](@ref)): `execute` returns once it is enqueued, ordered with
-Metal.jl's work on the calling task. Reading a result on the same task (`Array(y)`, `Metal.synchronize()`) waits for it;
-another task must synchronize the launching task first. Set `KernelDispatch.SYNC_LAUNCHES[] = true` (or
-`KERNELDISPATCH_SYNC_LAUNCHES=1`) to wait after every launch.
+By default the dispatch waits for completion. With `KernelDispatch.ASYNC_LAUNCHES[] = true` (or
+`KERNELDISPATCH_ASYNC_LAUNCHES=1`) it is asynchronous (see [`encode_launch`](@ref)): `execute` returns once it is enqueued,
+ordered with Metal.jl's work on the calling task. Reading a result on the same task (`Array(y)`, `Metal.synchronize()`) waits
+for it; another task must synchronize the launching task first.
 """
 function KD.execute(proto::MtlArray, l::KD.Launch)
     bound, slots = KD.bind_slots(proto, l.prelude, l.args, l.extras)

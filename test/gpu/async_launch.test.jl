@@ -3,10 +3,15 @@
 # read waits, and that an array freed right after a launch stays valid until the kernel is done. Every check here
 # interleaves the two kinds of work with NO synchronize in between and reads once at the end, so a launch that ran too
 # early or late, or a buffer recycled under it, shows up as a wrong number. Backend-neutral: see gpu_backend.jl.
+#
+# Launches wait by default; this file opts in to `KD.ASYNC_LAUNCHES` for its duration and restores it afterwards.
 
 using Test, Random, LinearAlgebra, KernelDispatch
 isdefined(@__MODULE__, :Residual) || include(joinpath(@__DIR__, "..", "fixtures.jl"))
 
+async_was = KD.ASYNC_LAUNCHES[]
+KD.ASYNC_LAUNCHES[] = true
+try
 begin
     rng = Random.Xoshiro(7)
     bin = register_logit_scale!()[:main]
@@ -140,16 +145,19 @@ begin
         @test t < 60                                     # seconds; milliseconds in practice. A hang is the failure
     end
 
-    @testset "SYNC_LAUNCHES restores waiting and changes no result" begin
+    @testset "waiting launches (the default) give the same results" begin
         x = rand(rng, Float32, 1000)
-        old = KD.SYNC_LAUNCHES[]
         try
-            KD.SYNC_LAUNCHES[] = true
+            KD.ASYNC_LAUNCHES[] = false
             @test Array(scale(DeviceArray(x), 5.0f0)) ≈ 5.0f0 .* x
+            y = DeviceArray(zeros(Float32, 1000))
+            for _ in 1:20
+                scale!(y, DeviceArray(x), 2.0f0)
+            end
+            @test Array(y) ≈ 2.0f0 .* x
         finally
-            KD.SYNC_LAUNCHES[] = old
+            KD.ASYNC_LAUNCHES[] = true
         end
-        @test KD.SYNC_LAUNCHES[] === old
     end
 
     @testset "timing still waits, after asynchronous launches" begin
@@ -161,4 +169,7 @@ begin
         t = time_binary(bin, OutArray(Float32, n), x, 2.0f0, Int32(n), Val(LS_TG); extent=n)
         @test t isa Float64 && t > 0
     end
+end
+finally
+    KD.ASYNC_LAUNCHES[] = async_was
 end

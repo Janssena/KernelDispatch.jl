@@ -5,10 +5,10 @@
 #
 # 1. CROSS-TASK READ WITHOUT SYNCHRONIZE. One task launches a long chain; another reads at once. Ordering is per task, so the
 #    reader may see the array before the chain finished. Prints how many of the trials read a stale (incomplete) result.
-#    Measured: Metal (M1 Pro) reads stale in most trials (29 of 30). CUDA (A40) reads 0 stale, with or without
-#    `SYNC_LAUNCHES`: CUDA.jl makes a reader on another stream wait for the memory's owner. With `SYNC_LAUNCHES` set
-#    Metal also reads 0 stale.
-# 2. WALL-CLOCK TIMING OF AN EAGER LAUNCH. `@elapsed` around launches without a synchronize now measures enqueueing only.
+#    Measured with asynchronous launches: Metal (M1 Pro) reads stale in most trials (29 of 30). CUDA (A40) reads 0 stale:
+#    CUDA.jl makes a reader on another stream wait for the memory's owner. With waiting launches (the default) both read 0.
+# 2. WALL-CLOCK TIMING OF AN EAGER LAUNCH. With asynchronous launches `@elapsed` around launches without a synchronize
+#    measures enqueueing only.
 # 3. A LATE ERROR. A launch that fails device-side does not throw at the launch (not probed: it needs a faulting kernel).
 
 using Test, Random, KernelDispatch
@@ -39,13 +39,13 @@ function chain_then_read_elsewhere(; n=1 << 20, K=300, trials=30)
     return stale, trials
 end
 
-for sync in (false, true)
-    KD.SYNC_LAUNCHES[] = sync
+for async in (true, false)
+    KD.ASYNC_LAUNCHES[] = async
     stale, trials = chain_then_read_elsewhere()
-    println("SYNC_LAUNCHES=$sync: $stale of $trials cross-task reads were stale")
+    println("ASYNC_LAUNCHES=$async: $stale of $trials cross-task reads were stale")
 end
-KD.SYNC_LAUNCHES[] = false
 
+KD.ASYNC_LAUNCHES[] = true
 let n = 1 << 20, K = 300
     x, y = DeviceArray(rand(Float32, n)), DeviceArray(zeros(Float32, n))
     scale!(y, x, 2f0); GPU_PKG.synchronize()

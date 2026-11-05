@@ -68,7 +68,7 @@ cubin's. PTX is accepted on any device. A threadgroup above the function's own l
 (over the limit a launch otherwise fails or, worse, silently misbehaves).
 
 Dynamic shared memory comes from [`KernelBinary`](@ref)'s `shared_mem`; above the default 48 KB it is raised on the
-function once. An eager launch does not wait for the device: see [Asynchronous launches](@ref) below.
+function once. An eager launch waits for the device unless you opt in to [Asynchronous launches](@ref).
 
 ### KernelAbstractions kernels: built flat
 
@@ -195,28 +195,37 @@ Its KA binaries take the kernel-state word and KA's context bytes ahead of their
 arbitrary byte slots, so every binary can be traced and no buffer order is required. The `mps.metal_kernel_lib` handler is a proposal in a jax-mps pull request, not yet in a release. The traced tests
 run only when a plugin that has it is found (`JAX_MPS_PLUGIN=/path/to/libpjrt_plugin_mps.dylib`).
 
-An eager launch is encoded into a command buffer derived from Metal.jl's own queue; see
+An eager launch is encoded into a command buffer derived from Metal.jl's own queue, and waits for it unless you opt in to
 [Asynchronous launches](@ref).
 
 ## Asynchronous launches
 
-An eager launch (`call_binary`, `run_binary`, `KernelDispatch.execute`) returns once the dispatch is **enqueued**, not
-when the device has finished it. On Metal it goes into a command buffer derived from Metal.jl's task-local queue; on CUDA it
-is a `cudacall` on the task's stream. Either way it is ordered like Metal.jl's and CUDA.jl's own work **on the calling task**:
-what the task enqueued before it (`fill!`, broadcasts, copies, GEMMs) runs first, what it enqueues after runs later, and a host
-read on the task (`Array(y)`, `copyto!`, `Metal.synchronize()` / `CUDA.synchronize()`) sees the result. An array freed
-right after the launch that reads it (`unsafe_free!`, or the GC) stays valid until the kernel is done.
+By default an eager launch (`call_binary`, `run_binary`, `KernelDispatch.execute`) **waits** for the device, so its result is
+correct whichever task reads it and a device-side error surfaces at the launch that caused it. That costs a CPU↔GPU round trip
+per launch, which dominates for small kernels and for code that interleaves many launches with vendor work (on an M1 Pro,
+1000 launches of a small kernel take 225 ms waiting and 26 ms asynchronous). To skip the wait, opt in with
+`KERNELDISPATCH_ASYNC_LAUNCHES=1` (read when the package loads) or `KernelDispatch.ASYNC_LAUNCHES[] = true`.
+
+An asynchronous launch returns once the dispatch is **enqueued**. On Metal it goes into a command buffer derived from Metal.jl's
+task-local queue; on CUDA it is a `cudacall` on the task's stream. Either way it is ordered like Metal.jl's and CUDA.jl's own
+work **on the calling task**: what the task enqueued before it (`fill!`, broadcasts, copies, GEMMs) runs first, what it
+enqueues after runs later, and a host read on the task (`Array(y)`, `copyto!`, `Metal.synchronize()` / `CUDA.synchronize()`)
+sees the result. An array freed right after the launch that reads it (`unsafe_free!`, or the GC) stays valid until the kernel
+is done. What it asks of you:
 
 - **Across tasks** there is no ordering to rely on. Work launched on one task and consumed on another needs a
-  synchronize on the launching task first. On Metal a reader that skips it mostly sees stale data. CUDA.jl happens to make
+  synchronize on the launching task first. On Metal a reader that skips it mostly sees stale data, silently. CUDA.jl happens to make
   a `CuArray` reader on another stream wait for the memory's owner (tested on an A40), but that is CUDA.jl's behavior,
   not something KernelDispatch guarantees; synchronize for code that must run on both.
 - **Device-side errors** surface at the next synchronization point rather than at the launch. To find the launch that
-  caused one, set `KERNELDISPATCH_SYNC_LAUNCHES=1` (read when the package loads) or `KernelDispatch.SYNC_LAUNCHES[] = true`:
-  every launch then waits, as launches did before they were asynchronous.
+  caused one, turn the option off again.
+- **Wall-clock timing** of a launch measures only the enqueue; synchronize before reading the clock.
 - **Timing waits.** `time_binary` and `device_time` synchronize first and read the device's own timestamps, whatever
-  the switch says.
+  the option says.
 - A traced launch is unaffected: XLA schedules those.
+
+The option is global to the process, so it is for the application (or script) to set, not for a library. A library that
+benefits from it can say so in its documentation.
 
 ## What is verified
 
@@ -249,7 +258,7 @@ stages 1-12; `HALF_SMOKE_ONLY=10,10c` runs some), each printing PASS or FAIL.
 
 - `ka_compile` on CUDA, and registering variants, need the GPU to be present (see [Building without a GPU](@ref)).
 - A single global device backend per session: [`current_target`](@ref) is `""` when more than one is loaded.
-- Eager launches are synchronous; there are no asynchronous launches.
+- Eager launches wait for the device unless [`ASYNC_LAUNCHES`](@ref) is set.
 - Float32, Float16 and BFloat16 are supported. A prebuilt `bfloat` kernel on Metal needs Metal 3.1 (macOS 14); BFloat16 on CUDA
   needs sm_80 for the native conversions. Triton kernels have been tested in Float32 only. Float64 is out of scope.
   A 2-byte scalar cannot be passed to XLA's handler, so it is refused in a CUDA trace: pass a `Float32` scalar.
