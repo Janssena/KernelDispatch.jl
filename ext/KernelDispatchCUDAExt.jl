@@ -101,10 +101,15 @@ function _launch(b::KD.KernelBinary, slots, grid::NTuple{3,Int})
     return nothing
 end
 
+# `cudacall` enqueues on the task's stream, the one CuArray operations use, so the launch is ordered with CUDA.jl's work
+# on this task. It waits afterwards unless `ASYNC_LAUNCHES` is set. `pointer(::CuArray)` records that stream as the
+# memory's owner and marks it dirty (`take_ownership!`), so a free is stream-ordered after the kernel and a host read of the
+# array synchronizes. With `ASYNC_LAUNCHES` a device-side exception is raised by CUDA.jl at its next synchronization
+# point rather than here; waiting after the launch (the default) throws it immediately.
 function KD.encode_launch(::KD.CUDABackendTag, b::KD.KernelBinary, slots, grid::NTuple{3,Int})
     _check_limit(b)
     _launch(b, slots, grid)
-    CUDACore.synchronize()          # also throws a device-side exception host-side
+    KD.ASYNC_LAUNCHES[] || CUDACore.synchronize()          # also throws a device-side exception host-side
     return nothing
 end
 
@@ -131,6 +136,12 @@ end
 Allocate every `OutArray` of the launch's arguments (an `InOutArray` is bound as its array), bind `(prelude..., args..., extras...)` in order
 (a `Val` takes no slot), launch, and return the allocated outputs. On `CuArray` rather than
 `AbstractArray`, so that it coexists with the other backends' methods.
+
+By default the launch waits for completion. With `KernelDispatch.ASYNC_LAUNCHES[] = true` (or
+`KERNELDISPATCH_ASYNC_LAUNCHES=1`) it is asynchronous (see [`encode_launch`](@ref)): `execute` returns once the launch
+is enqueued on the task's stream, ordered with CUDA.jl's work there. Reading a result on the same task (`Array(y)`,
+`CUDA.synchronize()`) waits for it; another task must synchronize the launching task first, and a device-side error
+surfaces at that synchronization.
 """
 function KD.execute(proto::CuArray, l::KD.Launch)
     bound, slots = KD.bind_slots(proto, l.prelude, l.args, l.extras)
