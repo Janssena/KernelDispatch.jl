@@ -68,7 +68,7 @@ cubin's. PTX is accepted on any device. A threadgroup above the function's own l
 (over the limit a launch otherwise fails or, worse, silently misbehaves).
 
 Dynamic shared memory comes from [`KernelBinary`](@ref)'s `shared_mem`; above the default 48 KB it is raised on the
-function once. Every eager launch synchronizes.
+function once. An eager launch does not wait for the device: see [Asynchronous launches](@ref) below.
 
 ### KernelAbstractions kernels: built flat
 
@@ -194,6 +194,27 @@ Its KA binaries take the kernel-state word and KA's context bytes ahead of their
 `mps.metal_kernel_lib` custom call for the [jax-mps](https://github.com/tillahoffmann/jax-mps) plugin, which takes
 arbitrary byte slots, so every binary can be traced and no buffer order is required. The `mps.metal_kernel_lib` handler is a proposal in a jax-mps pull request, not yet in a release. The traced tests
 run only when a plugin that has it is found (`JAX_MPS_PLUGIN=/path/to/libpjrt_plugin_mps.dylib`).
+
+An eager launch is encoded into a command buffer derived from Metal.jl's own queue; see
+[Asynchronous launches](@ref).
+
+## Asynchronous launches
+
+An eager launch (`call_binary`, `run_binary`, `KernelDispatch.execute`) returns once the dispatch is **enqueued**, not
+when the device has finished it. On Metal it goes into a command buffer derived from Metal.jl's task-local queue; on CUDA it
+is a `cudacall` on the task's stream. Either way it is ordered like Metal.jl's and CUDA.jl's own work **on the calling task**:
+what the task enqueued before it (`fill!`, broadcasts, copies, GEMMs) runs first, what it enqueues after runs later, and a host
+read on the task (`Array(y)`, `copyto!`, `Metal.synchronize()` / `CUDA.synchronize()`) sees the result. An array freed
+right after the launch that reads it (`unsafe_free!`, or the GC) stays valid until the kernel is done.
+
+- **Across tasks** there is no ordering. Work launched on one task and consumed on another needs a synchronize on the
+  launching task first.
+- **Device-side errors** surface at the next synchronization point rather than at the launch. To find the launch that
+  caused one, set `KERNELDISPATCH_SYNC_LAUNCHES=1` (read when the package loads) or `KernelDispatch.SYNC_LAUNCHES[] = true`:
+  every launch then waits, as launches did before they were asynchronous.
+- **Timing waits.** `time_binary` and `device_time` synchronize first and read the device's own timestamps, whatever
+  the switch says.
+- A traced launch is unaffected: XLA schedules those.
 
 ## What is verified
 

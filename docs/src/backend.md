@@ -52,6 +52,7 @@ backend using an `:explicit`-ABI kernel.
 
 ```@docs
 encode_launch
+SYNC_LAUNCHES
 device_time
 bind_slots
 device_dense
@@ -112,7 +113,9 @@ to differ.
    only when the device is usable, and defines [`backend_of`](@ref) for its arrays and [`device_dense`](@ref) for the
    wrappers (views, adjoints) that are not plain device arrays.
 3. **Launching.** [`execute`](@ref)`(::MyArray, ::Launch)` using [`bind_slots`](@ref), [`encode_launch`](@ref),
-   [`device_time`](@ref) and [`max_threads`](@ref). The conformance suite exercises exactly these.
+   [`device_time`](@ref) and [`max_threads`](@ref). The conformance suite exercises exactly these. `encode_launch`
+   returns without waiting: it must enqueue on the calling task's own queue or stream, so that it is ordered with the
+   vendor package's work, and wait afterwards only when [`SYNC_LAUNCHES`](@ref) is set. `device_time` waits.
 4. **Architecture.** [`target_id`](@ref) and [`compatible_target`](@ref). CUDA accepts a cubin from the same major
    version when the device's minor is at least its own; for ROCm expect an exact `gfx` match (with a few family rules),
    not CUDA's rule.
