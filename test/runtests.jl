@@ -25,9 +25,9 @@ const KD = KernelDispatch
 
 const VERBOSE = lowercase(get(ENV, "JULIA_TEST_VERBOSE", "false")) in ("true", "1", "yes")
 
-const CPU_SECTIONS = ["kernels", "inference", "preferences", "sdpa", "binary_checks", "signature", "triton"]
+const CPU_SECTIONS = ["kernels", "inference", "preferences", "device_utils", "sdpa", "binary_checks", "signature", "triton"]
 const EXT_HOST_SECTIONS = ["custom_call", "cuda_launch", "cuda_flat"]      # ext/, no device needed
-const GPU_SECTIONS = ["conformance", "launch", "gpu_inference", "gpu_sdpa", "mismatch", "traced"]
+const GPU_SECTIONS = ["conformance", "launch", "gpu_inference", "gpu_sdpa", "gpu_device_utils", "mismatch", "traced"]
 const EXT_GPU_SECTIONS = ["ext_cuda", "reactant", "enzyme"]                                       # ext/, needs that backend's device
 const GROUPS = ["cpu", "gpu", "ext"]
 known = [GROUPS; CPU_SECTIONS; EXT_HOST_SECTIONS; GPU_SECTIONS; EXT_GPU_SECTIONS]
@@ -64,6 +64,10 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
 
         cpu("preferences") && @testset verbose = VERBOSE "preferences" begin
             include("cpu/preferences.test.jl")
+        end
+
+        cpu("device_utils") && @testset verbose = VERBOSE "device utilities without a device" begin
+            include("cpu/device_utils.test.jl")
         end
 
         cpu("sdpa") && @testset verbose = VERBOSE "SDPAOps" begin
@@ -118,6 +122,10 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
                 include("gpu/sdpa.test.jl")
             end
 
+            gpu("gpu_device_utils") && @testset verbose = VERBOSE "device utilities: to_device, device_caps, release!" begin
+                include("gpu/device_utils.test.jl")
+            end
+
             gpu("mismatch") && @testset verbose = VERBOSE "mismatched types: the hazard, and the guard" begin
                 include("gpu/mismatch.test.jl")
             end
@@ -142,6 +150,9 @@ has_gpu || !needs_gpu || @warn "the GPU section is skipped: no usable GPU backen
             ext_gpu("ext_cuda") && GPU === :cuda && @testset verbose = VERBOSE "CUDA extension" begin
                 @testset verbose = VERBOSE "explicit binaries, Triton ABI, flat KA" begin
                     include("ext/cuda/explicit.test.jl")
+                end
+                @testset verbose = VERBOSE "device_caps" begin
+                    include("ext/cuda/device_caps.test.jl")
                 end
                 @testset verbose = VERBOSE "Triton kernels, eager and traced" begin
                     include("ext/cuda/triton.test.jl")
