@@ -145,12 +145,36 @@ ka_backend_object(be::KernelBackend) = throw(ArgumentError(
     "no KernelAbstractions backend for $(typeof(be)); load the package for that backend"))
 
 """
+    SYNC_LAUNCHES
+
+`Ref{Bool}`, default `false`. When `true`, every eager launch ([`encode_launch`](@ref)) waits for the device to finish
+before returning, as launches did before they were asynchronous. A debugging switch: a device-side error then surfaces at
+the launch that caused it, not at the next synchronization point. Initialised from the environment variable
+`KERNELDISPATCH_SYNC_LAUNCHES` (`1`, `true` or `yes`) when the package loads; assign to it to change it at runtime.
+Timing ([`device_time`](@ref), [`time_binary`](@ref)) always waits, whatever this says.
+"""
+const SYNC_LAUNCHES = Ref(false)
+
+_env_flag(name) = lowercase(get(ENV, name, "")) in ("1", "true", "yes")
+
+"""
     encode_launch(backend, b::KernelBinary, slots, grid::NTuple{3,Int})
 
 The lowest layer: bind `slots` (device arrays and bits scalars, in slot order, prelude included) to
-`b`'s entry point and dispatch it on a 3-D `grid` of `b.threadgroup`-thread groups, waiting for
-completion. Refuses a threadgroup over [`max_threads`](@ref). Implemented by the backend extension;
-callers want [`run_binary`](@ref), which builds the slots and grid.
+`b`'s entry point and dispatch it on a 3-D `grid` of `b.threadgroup`-thread groups. Refuses a threadgroup over
+[`max_threads`](@ref). Implemented by the backend extension; callers want [`run_binary`](@ref), which builds the slots
+and grid.
+
+**The launch is asynchronous**: it returns once the dispatch is enqueued, not when the device has finished. It is
+ordered like the backend's own work (Metal.jl's and CUDA.jl's kernels, copies, `fill!`, GEMMs) *on the calling task*:
+whatever that task enqueued earlier runs first, whatever it enqueues later runs after, and a host read on the task
+(`Array(x)`, `copyto!`, `Metal.synchronize()` / `CUDA.synchronize()`) sees the kernel's writes. An array freed right
+after the launch (`unsafe_free!`, or by the GC) stays valid until the kernel is done.
+
+What does not hold: ordering **across tasks**. Work launched on one task and consumed on another needs a
+synchronize on the launching task first. A device-side error surfaces at the next synchronization point, not at the
+launch; set [`SYNC_LAUNCHES`](@ref) (or the environment variable `KERNELDISPATCH_SYNC_LAUNCHES=1`) to wait after every
+launch while debugging. [`device_time`](@ref) and [`time_binary`](@ref) still wait.
 """
 function encode_launch end
 

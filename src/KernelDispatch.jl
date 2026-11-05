@@ -30,7 +30,7 @@ public opname, default_kernel, @default_kernel, default_candidates, kernelname, 
     variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, execute,
     Launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,
     GPUBackend, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, untraced, cache_root, ka_binary_cache_dir,
-    current_target, device_available, device_zeros, max_threads, device_backend
+    current_target, device_available, device_zeros, max_threads, device_backend, SYNC_LAUNCHES
 
 """
     device_zeros(proto, T, dims...) -> array
@@ -38,7 +38,12 @@ public opname, default_kernel, @default_kernel, default_candidates, kernelname, 
 A zero-filled array of `T` on the same device (or in the same trace) as `proto`: for `forward`
 overloads that need a placeholder. The Reactant extension specialises it for traced arrays.
 """
-device_zeros(proto, ::Type{T}, dims::Integer...) where {T} = 
+device_zeros(proto, ::Type{T}, dims::Integer...) where {T} =
     fill!(similar(proto, T, Int.(dims)), zero(T))
+
+function __init__()
+    SYNC_LAUNCHES[] = _env_flag("KERNELDISPATCH_SYNC_LAUNCHES")
+    return nothing
+end
 
 end
